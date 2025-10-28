@@ -41,12 +41,6 @@ http {
             add_header Content-Type text/plain;
         }
 
-        location /health {
-            access_log off;
-            return 200 "OK\n";
-            add_header Content-Type text/plain;
-        }
-
         location / {
             # トークンを変数に設定
             set $token "";

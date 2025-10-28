@@ -42,14 +42,14 @@ services:
     network_mode: service:tailscale
     restart: always
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:3003/health"]
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:3003/ping"]
       interval: 60s
-      timeout: 3s
+      timeout: 5s
       retries: 3
 
   redis:
     container_name: immich_redis
-    # 
+    # https://hub.docker.com/r/valkey/valkey/
     image: docker.io/valkey/valkey:9.0.0-alpine3.22@sha256:b4ee67d73e00393e712accc72cfd7003b87d0fcd63f0eba798b23251bfc9c394
     healthcheck:
       test: redis-cli ping || exit 1
@@ -73,6 +73,7 @@ services:
     restart: always
 
   tailscale:
+    # https://hub.docker.com/r/tailscale/tailscale/
     image: tailscale/tailscale:unstable-v1.89.261@sha256:c0b466172e14b6c31dec02a29d27580a67e139b79188352057493ae8bdbab8d2
     hostname: immich
     environment:
