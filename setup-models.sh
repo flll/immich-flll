@@ -1,6 +1,7 @@
 #!/bin/bash -e
 # Immich MLモデルセットアップスクリプト
 # モデルダウンロード + GCSアップロードを1回で実行
+# モデルを変更する場合、一度modelsディレクトリを削除して実行してください
 
 
 CLIP_MODEL_NAME="XLM-Roberta-Large-ViT-H-14__frozen_laion5b_s13b_b90k"
@@ -176,6 +177,103 @@ create_bucket() {
     fi
 }
 
+list_local_models() {
+    local model_type=$1
+    local models=()
+    
+    if [ -d "${MODELS_DIR}/${model_type}" ]; then
+        for dir in "${MODELS_DIR}/${model_type}"/*; do
+            if [ -d "$dir" ]; then
+                models+=("$(basename "$dir")")
+            fi
+        done
+    fi
+    
+    printf '%s\n' "${models[@]}"
+}
+
+list_gcs_models() {
+    local model_type=$1
+    local models=()
+    
+    if gsutil ls -b "gs://${BUCKET_NAME}" &> /dev/null; then
+        local gcs_dirs=$(gsutil ls "gs://${BUCKET_NAME}/${model_type}/" 2>/dev/null | grep "/$" || true)
+        
+        for dir in $gcs_dirs; do
+            local model_name=$(basename "$dir")
+            if [ -n "$model_name" ]; then
+                models+=("$model_name")
+            fi
+        done
+    fi
+    
+    printf '%s\n' "${models[@]}"
+}
+
+sync_models_to_gcs() {
+    print_info "ローカルとGCS間のモデル同期を開始..."
+    
+    local deleted_count=0
+    local uploaded_count=0
+    local skipped_count=0
+    
+    for model_type in "clip" "facial-recognition"; do
+        print_info "=== ${model_type} モデルの同期中 ==="
+        
+        local local_models=($(list_local_models "$model_type"))
+        local gcs_models=($(list_gcs_models "$model_type"))
+        
+        for gcs_model in "${gcs_models[@]}"; do
+            local found=false
+            for local_model in "${local_models[@]}"; do
+                if [ "$gcs_model" = "$local_model" ]; then
+                    found=true
+                    break
+                fi
+            done
+            
+            if [ "$found" = false ]; then
+                print_warning "GCS側の古いモデルを削除中: ${model_type}/${gcs_model}"
+                gsutil -m rm -r "gs://${BUCKET_NAME}/${model_type}/${gcs_model}"
+                print_success "削除完了: ${model_type}/${gcs_model}"
+                ((deleted_count++))
+            fi
+        done
+        
+        for local_model in "${local_models[@]}"; do
+            local found=false
+            for gcs_model in "${gcs_models[@]}"; do
+                if [ "$local_model" = "$gcs_model" ]; then
+                    found=true
+                    break
+                fi
+            done
+            
+            if [ "$found" = false ]; then
+                print_info "新しいモデルをアップロード中: ${model_type}/${local_model}"
+                gsutil -m rsync -r "${MODELS_DIR}/${model_type}/${local_model}" "gs://${BUCKET_NAME}/${model_type}/${local_model}"
+                print_success "アップロード完了: ${model_type}/${local_model}"
+                ((uploaded_count++))
+            else
+                print_debug "スキップ（既に同期済み）: ${model_type}/${local_model}"
+                ((skipped_count++))
+            fi
+        done
+    done
+    
+    echo ""
+    print_header "同期結果サマリー"
+    print_info "削除されたモデル: ${deleted_count}"
+    print_info "アップロードされたモデル: ${uploaded_count}"
+    print_info "スキップされたモデル: ${skipped_count}"
+    
+    if [ $deleted_count -eq 0 ] && [ $uploaded_count -eq 0 ]; then
+        print_success "すべてのモデルが既に同期されています"
+    else
+        print_success "モデルの同期が完了しました"
+    fi
+}
+
 upload_models() {
     print_info "モデルをGCSにアップロード中（差分のみ）..."
     
@@ -189,18 +287,34 @@ upload_models() {
 }
 
 verify_upload() {
-    print_info "アップロード結果を確認中..."
+    print_info "同期結果を確認中..."
     
-    print_info "GCSバケットの内容:"
-    gsutil ls -la "gs://${BUCKET_NAME}/"
+    local gcs_clip_models=($(list_gcs_models "clip"))
+    local gcs_facial_models=($(list_gcs_models "facial-recognition"))
     
-    CLIP_COUNT=$(gsutil ls -l "gs://${BUCKET_NAME}/clip/**" | wc -l)
-    FACIAL_COUNT=$(gsutil ls -l "gs://${BUCKET_NAME}/facial-recognition/**" | wc -l)
+    echo ""
+    print_header "GCS上のモデル一覧"
     
-    print_info "CLIPモデルファイル数: ${CLIP_COUNT}"
-    print_info "Facial recognitionモデルファイル数: ${FACIAL_COUNT}"
+    if [ ${#gcs_clip_models[@]} -gt 0 ]; then
+        print_info "CLIPモデル:"
+        for model in "${gcs_clip_models[@]}"; do
+            echo "  - ${model}"
+        done
+    else
+        print_warning "CLIPモデルがGCSに存在しません"
+    fi
     
-    print_success "アップロード確認完了"
+    if [ ${#gcs_facial_models[@]} -gt 0 ]; then
+        print_info "Facial recognitionモデル:"
+        for model in "${gcs_facial_models[@]}"; do
+            echo "  - ${model}"
+        done
+    else
+        print_warning "Facial recognitionモデルがGCSに存在しません"
+    fi
+    
+    echo ""
+    print_success "同期確認完了"
 }
 
 show_cloud_run_info() {
@@ -231,7 +345,7 @@ main() {
     verify_download
     
     create_bucket
-    upload_models
+    sync_models_to_gcs
     verify_upload
     show_cloud_run_info
     
@@ -244,13 +358,17 @@ show_help() {
     echo "Immich MLモデルセットアップスクリプト（統合版）"
     echo ""
     echo "使用方法:"
-    echo "  $0                 # モデルをダウンロードしてGCSにアップロード"
+    echo "  $0                 # モデルをダウンロードしてGCSに同期"
     echo "  $0 --help         # このヘルプを表示"
     echo ""
     echo "機能:"
     echo "  - Dockerコンテナでモデルをダウンロード（checksum検証・スキップ機能付き）"
     echo "  - GCSバケットを作成"
-    echo "  - 差分のみGCSにアップロード（rsync方式）"
+    echo "  - インテリジェント同期:"
+    echo "    * ローカルとGCSのモデルを比較（ディレクトリ名ベース）"
+    echo "    * GCS側の古いモデルを自動削除（費用削減）"
+    echo "    * 新しいモデルのみアップロード"
+    echo "    * 既に同期済みのモデルはスキップ"
     echo "  - Cloud Run設定の案内表示"
     echo ""
     echo "設定:"
@@ -264,6 +382,11 @@ show_help() {
     echo "  - Dockerがインストールされ、起動している"
     echo "  - gcloud CLIがインストールされ、認証済み"
     echo "  - ${MODELS_DIR} に書き込み権限がある"
+    echo ""
+    echo "使用例:"
+    echo "  1. 初回実行: すべてのモデルをダウンロード＆アップロード"
+    echo "  2. 2回目以降（変更なし）: スキップメッセージが表示される"
+    echo "  3. モデル変更後: 古いモデルを削除し、新しいモデルをアップロード"
 }
 
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
