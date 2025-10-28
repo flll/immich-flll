@@ -18,10 +18,13 @@ services:
       # 次の行は編集しないでください。システム上のメディア保存場所を変更したい場合は、.envファイルのUPLOAD_LOCATIONの値を編集してください
       - ${UPLOAD_LOCATION}:/data
       - /etc/localtime:/etc/localtime:ro
+    depends_on:
+      - redis
+      - database
     env_file:
       - .env
     environment:
-      # # echo '{"host":"127.0.0.1","port":6379}' | base64
+      # echo -n "ioredis://"; echo '{"host":"127.0.0.1","port":6379}' | base64
       REDIS_URL: ioredis://eyJob3N0IjoiMTI3LjAuMC4xIiwicG9ydCI6NjM3OX0K
       DB_URL: postgresql://${DB_USERNAME}:${DB_PASSWORD}@127.0.0.1:5432/${DB_DATABASE_NAME}?sslmode=disable
     network_mode: service:tailscale
