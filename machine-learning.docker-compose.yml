@@ -1,0 +1,21 @@
+# これ起動したらimmich設定でhttp://immich_machine_learning:3003 を指定してください
+# cloud runを使用する場合このdocker-compose.ymlは不要です
+services:
+  immich-machine-learning:
+    container_name: immich_machine_learning
+    image: ghcr.io/immich-app/immich-machine-learning:${IMMICH_VERSION}-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities:
+                - gpu
+    volumes:
+      - ./models:/cache
+      - /usr/local/nvidia/lib64:/usr/local/nvidia/lib64:ro
+    network_mode: service:tailscale
+    env_file:
+      - .env
+  

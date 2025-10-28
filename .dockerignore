@@ -1,0 +1,37 @@
+# Immich App Docker Ignore File
+# データディレクトリ
+immich/
+library/
+postgres/
+tailscale/
+models/
+
+# 設定・認証情報
+.env
+service-account-key.json
+
+# Git関連
+.git/
+.gitignore
+
+# ドキュメント・スクリプト
+*.md
+*.sh
+.plan.md
+
+# Docker関連
+docker-compose.yml
+machine-learning.docker-compose.yml
+*.dockerfile
+
+# ログファイル
+*.log
+
+# OS固有ファイル
+.DS_Store
+Thumbs.db
+
+# その他
+node_modules/
+*.tmp
+*.temp
