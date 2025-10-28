@@ -1,6 +1,7 @@
 # Immich App Docker Ignore File
 # データディレクトリ
 immich/
+photos/
 library/
 postgres/
 tailscale/

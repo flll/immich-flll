@@ -62,6 +62,7 @@ services:
   database:
     container_name: immich_postgres
     # https://github.com/immich-app/base-images/pkgs/container/postgres
+    #image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
     image: ghcr.io/immich-app/postgres:18-vectorchord0.5.3-pgvector0.8.1@sha256:64103c0f436e5591646c9c34f55c5f60c4f6db5cfa595917f7d3483ca8d10b76
     environment:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
