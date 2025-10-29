@@ -106,6 +106,15 @@ fi
 TEMP_FILE=$(mktemp)
 cat "$ENV_FILE" > "$TEMP_FILE"
 
+print_info "Cloud Run用にIMMICH_PORTを3003に上書きしています..."
+if grep -q "^IMMICH_PORT=" "$TEMP_FILE"; then
+    sed -i 's>^IMMICH_PORT=.*>IMMICH_PORT=3003>' "$TEMP_FILE"
+    print_success "IMMICH_PORTを3003に上書きしました"
+else
+    echo "IMMICH_PORT=3003" >> "$TEMP_FILE"
+    print_success "IMMICH_PORT=3003を追加しました"
+fi
+
 if gcloud secrets describe "$SECRET_NAME" &>/dev/null; then
     print_warning "シークレット '$SECRET_NAME' は既に存在します"
     read -p "上書きしますか？ (y/N): " -n 1 -r
@@ -128,8 +137,11 @@ if gcloud secrets describe "$SECRET_NAME" &>/dev/null; then
     for VERSION in $ENABLED_VERSIONS; do
         if [[ "$VERSION" != "$LATEST_VERSION" ]]; then
             print_info "バージョン $VERSION を破棄しています..."
-            gcloud secrets versions destroy "$VERSION" --secret="$SECRET_NAME" &>/dev/null
-            ((DESTROYED_COUNT++))
+            if echo y | gcloud secrets versions destroy "$VERSION" --secret="$SECRET_NAME" &>/dev/null; then
+                ((DESTROYED_COUNT++)) || true
+            else
+                print_warning "バージョン $VERSION の破棄に失敗しました（スキップします）"
+            fi
         fi
     done
     
