@@ -69,10 +69,9 @@ services:
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_DB: ${DB_DATABASE_NAME}
       POSTGRES_INITDB_ARGS: '--data-checksums'
-      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       # 次の行は編集しないでください。システム上のデータベース保存場所を変更したい場合は、.envファイルのDB_DATA_LOCATIONの値を編集してください
-      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql
     shm_size: 128mb
     network_mode: service:tailscale
     restart: always

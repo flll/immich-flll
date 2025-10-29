@@ -1,7 +1,8 @@
-/immich/**
-/library/**
-/postgres/**
-/tailscale/**
-/models/**
+/immich
+/photos
+/library
+/postgres
+/tailscale
+/models
 service-account-key.json
 .env
