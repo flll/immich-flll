@@ -71,7 +71,7 @@ services:
       POSTGRES_INITDB_ARGS: '--data-checksums'
     volumes:
       # 次の行は編集しないでください。システム上のデータベース保存場所を変更したい場合は、.envファイルのDB_DATA_LOCATIONの値を編集してください
-      - ${DB_DATA_LOCATION}:/var/lib/postgresql/data
+      - ${DB_DATA_LOCATION}:/var/lib/postgresql
     shm_size: 128mb
     network_mode: service:tailscale
     restart: always
@@ -81,7 +81,7 @@ services:
     image: tailscale/tailscale:unstable-v1.89.261@sha256:c0b466172e14b6c31dec02a29d27580a67e139b79188352057493ae8bdbab8d2
     hostname: immich
     environment:
-      TS_AUTHKE: ${TS_AUTH_KEY}
+      TS_AUTHKEY: ${TS_AUTH_KEY}
       TS_EXTRA_ARGS: ${TS_EXTRA_ARGS}
       TS_STATE_DIR: /var/lib/tailscale
       TS_USERSPACE: false
