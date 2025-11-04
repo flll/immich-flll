@@ -217,6 +217,63 @@ EXCLUDE_PATTERNS=(
 
 ## 🔧 トラブルシューティング
 
+### リージョン us-ashburn-1 が利用できない
+
+**症状**: `NotAuthorized`, `TenantNotFound`, `not subscribed` などのエラー
+
+**原因**: リージョン `us-ashburn-1` がサブスクライブされていません
+
+**解決策**:
+
+us-ashburn-1 リージョンをサブスクライブしてください：
+
+1. [OCIコンソール](https://cloud.oracle.com/)にログイン
+2. 左上のメニュー → **Governance & Administration** → **Region Management**
+3. **US East (Ashburn)** を探して **Subscribe** ボタンをクリック
+4. サブスクライブ完了後（数分かかる場合があります）、スクリプトを再実行
+
+**注意**: このバックアップソリューションは `us-ashburn-1` リージョン専用です。オフサイトバックアップの目的で米国リージョンを使用しています。
+
+### ネームスペースの取得に失敗する
+
+**症状**: `ネームスペースの自動取得に失敗しました` エラー
+
+**原因**: ネームスペースが自動取得できない場合（稀）
+
+**解決策**:
+
+手動でネームスペースを設定してください：
+
+```bash
+# 1. OCIコンソールでネームスペースを確認
+#    OCIコンソール → 右上のプロファイル → Tenancy → Object Storage Namespace
+
+# 2. 環境変数として設定
+export OCI_NAMESPACE='あなたのネームスペース'  # 例: axmroep1pvtu
+
+# 3. スクリプトを再実行
+./backup.sh
+```
+
+ネームスペースは一度取得されると `oci/namespace` ファイルに保存され、次回以降は自動的に使用されます。
+
+### コンパートメントIDを手動設定する
+
+**症状**: `コンパートメントIDの取得に失敗しました` エラー
+
+**解決策**:
+
+```bash
+# OCIコンソールからコンパートメントOCIDを取得
+# Identity → Compartments → コンパートメント名をクリック → OCID をコピー
+
+# 環境変数として設定
+export OCI_COMPARTMENT_ID='ocid1.compartment.oc1..xxxxx'
+
+# スクリプトを再実行
+./backup.sh
+```
+
 ### 認証エラーが発生する
 
 **症状**: `ServiceError: Authentication failed` などのエラー

@@ -151,25 +151,93 @@ echo ""
 # OCI Namespaceの取得（未設定の場合）
 if [ -z "${OCI_NAMESPACE}" ]; then
     print_info "OCIネームスペースを取得しています..."
-    OCI_NAMESPACE=$(docker run --rm \
+    
+    # 方法1: os ns get で直接取得（最も正統的な方法）
+    print_info "方法1: os ns get でネームスペースを取得中..."
+    
+    set +e  # 一時的にエラー停止を無効化
+    NS_GET_OUTPUT=$(docker run --rm \
         --user $(id -u):$(id -g) \
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        os ns get --auth security_token 2>&1 | grep -o '"name" *: *"[^"]*"' | cut -d'"' -f4)
+        os ns get --auth security_token --region "${OCI_REGION}" 2>&1)
+    NS_GET_EXIT=$?
+    set -e  # エラー停止を再度有効化
+    
+    if [ ${NS_GET_EXIT} -eq 0 ]; then
+        OCI_NAMESPACE=$(echo "${NS_GET_OUTPUT}" | grep -o '"name" *: *"[^"]*"' | head -1 | cut -d'"' -f4)
+        
+        if [ -n "${OCI_NAMESPACE}" ]; then
+            print_success "ネームスペース取得成功（方法1）: ${OCI_NAMESPACE}"
+            echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
+        fi
+    else
+        # エラーチェック：リージョンがサブスクライブされていない可能性
+        if echo "${NS_GET_OUTPUT}" | grep -qi "NotAuthorized\|not subscribed\|not available\|TenantNotFound"; then
+            print_error "リージョン '${OCI_REGION}' が利用できません"
+            echo ""
+            print_header "エラー原因"
+            echo "  リージョン '${OCI_REGION}' がサブスクライブされていない可能性があります"
+            echo ""
+            print_header "解決策"
+            echo ""
+            print_info "us-ashburn-1 リージョンをサブスクライブしてください："
+            echo "  1. OCIコンソール（https://cloud.oracle.com/）にログイン"
+            echo "  2. 左上のメニュー → Governance & Administration → Region Management"
+            echo "  3. 'US East (Ashburn)' を探して 'Subscribe' ボタンをクリック"
+            echo "  4. サブスクライブ完了後（数分かかる場合があります）、このスクリプトを再実行"
+            echo ""
+            print_info "詳細なエラー情報:"
+            echo "${NS_GET_OUTPUT}"
+            echo ""
+            exit 1
+        fi
+        
+        print_warning "方法1でのネームスペース取得に失敗。方法2を試行します..."
+    fi
+fi
+
+# 方法2: ダミーリクエストでエラーメッセージから正しいネームスペースを抽出
+if [ -z "${OCI_NAMESPACE}" ]; then
+    print_info "方法2: エラーメッセージからネームスペースを抽出中..."
+    
+    set +e  # 一時的にエラー停止を無効化
+    # 存在しないバケットで意図的にエラーを起こし、正しいネームスペースを得る
+    NS_TEST_OUTPUT=$(docker run --rm \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+        "${OCI_CLI_IMAGE}" \
+        os bucket get \
+        --bucket-name "__namespace_discovery_test__" \
+        --namespace "test" \
+        --auth security_token \
+        --region "${OCI_REGION}" 2>&1)
+    set -e  # エラー停止を再度有効化
+    
+    # エラーメッセージから正しいネームスペースを抽出
+    # "namespace of the account ('axmroep1pvtu')" というパターンを探す
+    OCI_NAMESPACE=$(echo "${NS_TEST_OUTPUT}" | \
+        grep -o "namespace of the account ('[^']*')" | \
+        cut -d"'" -f2)
     
     if [ -n "${OCI_NAMESPACE}" ]; then
-        print_success "ネームスペース: ${OCI_NAMESPACE}"
+        print_success "ネームスペース取得成功（方法2）: ${OCI_NAMESPACE}"
         echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
-    else
-        print_error "ネームスペースの取得に失敗しました"
-        print_info "デバッグ出力を確認中..."
-        docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-            "${OCI_CLI_IMAGE}" \
-            os ns get --auth security_token
-        exit 1
     fi
+fi
+
+# 最終確認：取得に失敗した場合
+if [ -z "${OCI_NAMESPACE}" ]; then
+    print_error "ネームスペースの自動取得に失敗しました"
+    echo ""
+    print_warning "以下のコマンドで手動設定してください:"
+    echo "  1. OCIコンソールからネームスペースを確認"
+    echo "     OCIコンソール → プロファイル（右上）→ Tenancy → Object Storage Namespace"
+    echo "  2. 環境変数を設定して再実行"
+    echo "     $ export OCI_NAMESPACE='あなたのネームスペース'"
+    echo "     $ ./backup.sh"
+    echo ""
+    exit 1
 fi
 echo ""
 
@@ -205,17 +273,18 @@ print_info "バケット '${OCI_BUCKET_NAME}' を確認しています..."
 
 if docker run --rm \
     --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/.oci" \
+    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
     "${OCI_CLI_IMAGE}" \
     os bucket get \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
-    --auth security_token >/dev/null 2>&1; then
+    --auth security_token \
+    --region "${OCI_REGION}" >/dev/null 2>&1; then
     print_success "バケット '${OCI_BUCKET_NAME}' は既に存在します"
 else
     print_info "バケット '${OCI_BUCKET_NAME}' を作成しています..."
     
-    if docker run --rm \
+    BUCKET_CREATE_OUTPUT=$(docker run --rm \
         --user $(id -u):$(id -g) \
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
@@ -224,11 +293,69 @@ else
         --name "${OCI_BUCKET_NAME}" \
         --namespace "${OCI_NAMESPACE}" \
         --storage-tier Archive \
-        --auth security_token >/dev/null 2>&1; then
+        --auth security_token \
+        --region "${OCI_REGION}" 2>&1)
+    
+    # 成功チェック
+    if echo "${BUCKET_CREATE_OUTPUT}" | grep -q '"name" *: *"'"${OCI_BUCKET_NAME}"'"'; then
         print_success "バケット '${OCI_BUCKET_NAME}' を作成しました（Archive Storage）"
     else
-        print_error "バケットの作成に失敗しました"
-        exit 1
+        # ネームスペース不一致エラーの自動修正を試行
+        if echo "${BUCKET_CREATE_OUTPUT}" | grep -q "namespace in the URL.*must match"; then
+            print_warning "ネームスペース不一致エラーを検出しました"
+            
+            # エラーメッセージから正しいネームスペースを抽出
+            CORRECT_NS=$(echo "${BUCKET_CREATE_OUTPUT}" | \
+                grep -o "namespace of the account ('[^']*')" | \
+                cut -d"'" -f2)
+            
+            if [ -n "${CORRECT_NS}" ] && [ "${CORRECT_NS}" != "${OCI_NAMESPACE}" ]; then
+                print_info "ネームスペースを自動修正: ${OCI_NAMESPACE} → ${CORRECT_NS}"
+                OCI_NAMESPACE="${CORRECT_NS}"
+                echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
+                echo ""
+                
+                # 正しいネームスペースでバケット作成を再試行
+                print_info "バケット作成を再試行しています..."
+                BUCKET_CREATE_OUTPUT=$(docker run --rm \
+                    --user $(id -u):$(id -g) \
+                    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+                    "${OCI_CLI_IMAGE}" \
+                    os bucket create \
+                    --compartment-id "${OCI_COMPARTMENT_ID}" \
+                    --name "${OCI_BUCKET_NAME}" \
+                    --namespace "${OCI_NAMESPACE}" \
+                    --storage-tier Archive \
+                    --auth security_token \
+                    --region "${OCI_REGION}" 2>&1)
+                
+                if echo "${BUCKET_CREATE_OUTPUT}" | grep -q '"name" *: *"'"${OCI_BUCKET_NAME}"'"'; then
+                    print_success "バケット '${OCI_BUCKET_NAME}' を作成しました（Archive Storage）"
+                else
+                    print_error "バケット作成に失敗しました（再試行後）"
+                    echo ""
+                    print_info "エラー詳細:"
+                    echo "${BUCKET_CREATE_OUTPUT}"
+                    echo ""
+                    exit 1
+                fi
+            else
+                print_error "ネームスペースの自動修正に失敗しました"
+                echo ""
+                print_info "エラー詳細:"
+                echo "${BUCKET_CREATE_OUTPUT}"
+                echo ""
+                exit 1
+            fi
+        else
+            # その他のエラー
+            print_error "バケットの作成に失敗しました"
+            echo ""
+            print_info "エラー詳細:"
+            echo "${BUCKET_CREATE_OUTPUT}"
+            echo ""
+            exit 1
+        fi
     fi
 fi
 echo ""
@@ -330,7 +457,7 @@ echo ""
 
 if docker run --rm \
     --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/.oci" \
+    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
     -v "${TEMP_DIR}:/backup" \
     "${OCI_CLI_IMAGE}" \
     os object put \
@@ -342,6 +469,7 @@ if docker run --rm \
     --part-size 128 \
     --parallel-upload-count 10 \
     --auth security_token \
+    --region "${OCI_REGION}" \
     --debug 2>&1 | tee -a "${OCI_DIR}/last_backup.log"; then
     
     # 終了時刻の記録
