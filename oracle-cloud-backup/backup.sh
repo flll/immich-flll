@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -eux
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -20,10 +20,10 @@ set -e  # エラーで停止
 
 # クリーンアップ関数
 cleanup() {
-    if [ -n "${BACKUP_PASSWORD}" ]; then
+    if [ -n "${BACKUP_PASSWORD:-}" ]; then
         unset BACKUP_PASSWORD
     fi
-    if [ -n "${BACKUP_PASSWORD_CONFIRM}" ]; then
+    if [ -n "${BACKUP_PASSWORD_CONFIRM:-}" ]; then
         unset BACKUP_PASSWORD_CONFIRM
     fi
 }
@@ -115,9 +115,10 @@ if [ -f "${OCI_CONFIG_DIR}/config" ] && [ -d "${OCI_CONFIG_DIR}/sessions/DEFAULT
     
     # トークンの有効期限チェック（簡易的）
     if docker run --rm \
-        -v "${OCI_CONFIG_DIR}:/root/.oci" \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        oci iam region list --auth security_token >/dev/null 2>&1; then
+        iam region list --auth security_token >/dev/null 2>&1; then
         print_success "認証情報は有効です"
     else
         print_warning "認証情報の有効期限が切れています。再認証が必要です"
@@ -132,9 +133,11 @@ if [ ! -f "${OCI_CONFIG_DIR}/config" ]; then
     echo ""
     
     if docker run --rm -it \
-        -v "${OCI_CONFIG_DIR}:/root/.oci" \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+        -p 8181:8181 \
         "${OCI_CLI_IMAGE}" \
-        oci session authenticate --region "${OCI_REGION}" --profile-name DEFAULT; then
+        session authenticate --region "${OCI_REGION}" --profile-name DEFAULT; then
         print_success "OCI認証が完了しました"
     else
         print_error "OCI認証に失敗しました"
@@ -149,15 +152,22 @@ echo ""
 if [ -z "${OCI_NAMESPACE}" ]; then
     print_info "OCIネームスペースを取得しています..."
     OCI_NAMESPACE=$(docker run --rm \
-        -v "${OCI_CONFIG_DIR}:/root/.oci" \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        oci os ns get --auth security_token 2>/dev/null | grep -o '"name" *: *"[^"]*"' | cut -d'"' -f4)
+        os ns get --auth security_token 2>&1 | grep -o '"name" *: *"[^"]*"' | cut -d'"' -f4)
     
     if [ -n "${OCI_NAMESPACE}" ]; then
         print_success "ネームスペース: ${OCI_NAMESPACE}"
         echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
     else
         print_error "ネームスペースの取得に失敗しました"
+        print_info "デバッグ出力を確認中..."
+        docker run --rm \
+            --user $(id -u):$(id -g) \
+            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+            "${OCI_CLI_IMAGE}" \
+            os ns get --auth security_token
         exit 1
     fi
 fi
@@ -167,9 +177,10 @@ echo ""
 if [ -z "${OCI_COMPARTMENT_ID}" ]; then
     print_info "コンパートメントIDを取得しています..."
     OCI_COMPARTMENT_ID=$(docker run --rm \
-        -v "${OCI_CONFIG_DIR}:/root/.oci" \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        oci iam compartment list --auth security_token --compartment-id-in-subtree true --limit 1 2>/dev/null | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
+        iam compartment list --auth security_token --compartment-id-in-subtree true --limit 1 2>&1 | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
     
     if [ -n "${OCI_COMPARTMENT_ID}" ]; then
         print_success "コンパートメントID取得完了"
@@ -177,6 +188,12 @@ if [ -z "${OCI_COMPARTMENT_ID}" ]; then
     else
         print_error "コンパートメントIDの取得に失敗しました"
         print_warning "OCI_COMPARTMENT_ID環境変数を手動で設定してください"
+        print_info "デバッグ出力を確認中..."
+        docker run --rm \
+            --user $(id -u):$(id -g) \
+            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+            "${OCI_CLI_IMAGE}" \
+            iam compartment list --auth security_token --compartment-id-in-subtree true --limit 1
         exit 1
     fi
 fi
@@ -187,9 +204,10 @@ print_header "バケットの確認"
 print_info "バケット '${OCI_BUCKET_NAME}' を確認しています..."
 
 if docker run --rm \
-    -v "${OCI_CONFIG_DIR}:/root/.oci" \
+    --user $(id -u):$(id -g) \
+    -v "${OCI_CONFIG_DIR}:/.oci" \
     "${OCI_CLI_IMAGE}" \
-    oci os bucket get \
+    os bucket get \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
     --auth security_token >/dev/null 2>&1; then
@@ -198,9 +216,10 @@ else
     print_info "バケット '${OCI_BUCKET_NAME}' を作成しています..."
     
     if docker run --rm \
-        -v "${OCI_CONFIG_DIR}:/root/.oci" \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        oci os bucket create \
+        os bucket create \
         --compartment-id "${OCI_COMPARTMENT_ID}" \
         --name "${OCI_BUCKET_NAME}" \
         --namespace "${OCI_NAMESPACE}" \
@@ -310,10 +329,11 @@ print_warning "このプロセスは数時間かかる場合があります"
 echo ""
 
 if docker run --rm \
-    -v "${OCI_CONFIG_DIR}:/root/.oci" \
+    --user $(id -u):$(id -g) \
+    -v "${OCI_CONFIG_DIR}:/.oci" \
     -v "${TEMP_DIR}:/backup" \
     "${OCI_CLI_IMAGE}" \
-    oci os object put \
+    os object put \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
     --file "/backup/${BACKUP_FILENAME}" \

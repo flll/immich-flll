@@ -31,13 +31,8 @@ Oracle Cloud Infrastructure (OCI) の Archive Storage を使用して、Immich �
 
 ### 1. 初回セットアップ
 
-#### ステップ 1: ディレクトリに移動
 
-```bash
-cd /mnt/hdd_blue/immich-app/oracle-cloud-backup
-```
-
-#### ステップ 2: OCI 認証（初回のみ）
+#### ステップ 1: OCI 認証（初回のみ）
 
 初回実行時はブラウザで OCI にログインする必要があります：
 
@@ -46,7 +41,7 @@ cd /mnt/hdd_blue/immich-app/oracle-cloud-backup
 docker run --rm -it \
   -v $(pwd)/oci:/root/.oci \
   ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6 \
-  oci session authenticate --region us-ashburn-1
+  session authenticate --region us-ashburn-1
 ```
 
 ブラウザが開くので、OCI にログインしてください。認証情報は `oci/` ディレクトリに保存されます。
@@ -235,7 +230,7 @@ rm -rf oci/sessions oci/config
 docker run --rm -it \
   -v $(pwd)/oci:/root/.oci \
   ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6 \
-  oci session authenticate --region us-ashburn-1
+  session authenticate --region us-ashburn-1
 ```
 
 ### 復号化に失敗する

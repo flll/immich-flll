@@ -11,12 +11,16 @@
 # 注意: パスコード入力が必要なため、バックグラウンド実行(-d)は推奨しません
 #
 
-version: '3.8'
-
 services:
   oci-backup:
     image: ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6
     container_name: immich_oci_backup
+    
+    # 現在のユーザー権限で実行（rootless）
+    user: "${UID:-1000}:${GID:-1000}"
+    
+    ports:
+      - "8181:8181"
     
     # 対話的入力を有効化（パスコード入力用）
     stdin_open: true
@@ -30,8 +34,8 @@ services:
       # バックアップスクリプト
       - ./backup.sh:/scripts/backup.sh:ro
       
-      # OCI認証情報と設定
-      - ./oci:/root/.oci
+      # OCI認証情報と設定（非rootユーザー用のパス）
+      - ./oci:/oracle/.oci
       
       # Immichデータ（読み取り専用）
       - /mnt/hdd_blue/immich-app:/mnt/hdd_blue/immich-app:ro
