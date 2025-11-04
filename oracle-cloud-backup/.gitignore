@@ -1,0 +1,16 @@
+# OCI認証情報とセッション情報
+oci/
+
+# バックアップログ
+*.log
+
+# 一時ファイル
+*.tmp
+*.bak
+
+# macOS
+.DS_Store
+
+# Linux
+*~
+
