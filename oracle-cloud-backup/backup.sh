@@ -1,4 +1,4 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -57,7 +57,7 @@ print_header() {
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OCI_DIR="${SCRIPT_DIR}/oci"
 OCI_CONFIG_DIR="${OCI_DIR}"
-IMMICH_ROOT="/mnt/hdd_blue/immich-app"
+IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEMP_DIR="${OCI_DIR}/temp"
 
 # OCI設定（デフォルト値）
@@ -113,21 +113,6 @@ print_info "バックアップ元: ${IMMICH_ROOT}"
 print_info "OCI リージョン: ${OCI_REGION}"
 print_info "バケット名: ${OCI_BUCKET_NAME}"
 print_info "暗号化方式: OpenSSL AES-256-GCM"
-echo ""
-
-# OCI CLIイメージの取得
-print_header "OCI CLIイメージの確認"
-if docker image inspect "${OCI_CLI_IMAGE}" >/dev/null 2>&1; then
-    print_success "OCI CLIイメージは既に存在します"
-else
-    print_info "OCI CLIイメージをプルしています..."
-    if docker pull "${OCI_CLI_IMAGE}"; then
-        print_success "OCI CLIイメージを取得しました"
-    else
-        print_error "OCI CLIイメージの取得に失敗しました"
-        exit 1
-    fi
-fi
 echo ""
 
 # OCI認証の確認と実行
@@ -249,22 +234,6 @@ if [ -z "${OCI_NAMESPACE}" ]; then
 
     NS_GET_OUTPUT=$(docker run --rm \
         --user $(id -u):$(id -g) \
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        .
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
         os ns get --auth security_token --region "${OCI_REGION}" 2>&1)
@@ -394,69 +363,12 @@ if [ "${LOGIN_ONLY}" = true ]; then
     exit 0
 fi
 
-# IAMポリシーの確認と作成
-print_header "IAM権限の確認"
-print_info "バケット管理用のIAMポリシーを確認しています..."
-
-if [ -z "${OCI_TENANCY_ID}" ]; then
-    print_warning "テナンシーIDが取得できませんでした。ポリシー確認をスキップします"
-else
-    # ポリシーの存在確認
-    set +e
-    POLICY_CHECK=$(docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        iam policy list \
-        --compartment-id "${OCI_TENANCY_ID}" \
-        --auth security_token \
-        --region "${OCI_HOME_REGION}" \
-        --all 2>&1 | grep -c '"name": "immich-backup-bucket-policy"')
-    POLICY_CHECK_EXIT=$?
-    set -e
-
-    if [ ${POLICY_CHECK} -gt 0 ]; then
-        print_success "IAMポリシー 'immich-backup-bucket-policy' は既に存在します"
-    else
-        print_warning "IAMポリシーが見つかりません。作成を試行します..."
-        
-        set +e
-        POLICY_CREATE_OUTPUT=$(docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-            "${OCI_CLI_IMAGE}" \
-            iam policy create \
-            --compartment-id "${OCI_TENANCY_ID}" \
-            --name "immich-backup-bucket-policy" \
-            --description "Policy to allow bucket creation and management for immich backup" \
-            --statements '["allow group OCI_Administrators to manage buckets in compartment ManagedCompartmentForPaaS", "allow group OCI_Administrators to manage objects in compartment ManagedCompartmentForPaaS"]' \
-            --auth security_token \
-            --region "${OCI_HOME_REGION}" 2>&1)
-        POLICY_CREATE_EXIT=$?
-        set -e
-
-        if [ ${POLICY_CREATE_EXIT} -eq 0 ]; then
-            print_success "IAMポリシーを作成しました"
-            print_warning "ポリシー反映のため10秒待機しています..."
-            sleep 10
-        else
-            # ポリシー作成失敗の場合でも続行（既に必要な権限がある可能性）
-            if echo "${POLICY_CREATE_OUTPUT}" | grep -q "already exists"; then
-                print_success "IAMポリシーは既に存在します"
-            else
-                print_warning "IAMポリシーの作成に失敗しましたが、続行します"
-                print_info "必要な権限が既にある場合は問題ありません"
-            fi
-        fi
-    fi
-fi
-echo ""
-
-# バケットの確認と作成
+# バケットの存在確認
 print_header "バケットの確認"
-print_info "バケット '${OCI_BUCKET_NAME}' を確認しています..."
+print_info "バケット '${OCI_BUCKET_NAME}' の存在を確認しています..."
 
-if docker run --rm \
+set +e
+BUCKET_CHECK_OUTPUT=$(docker run --rm \
     --user $(id -u):$(id -g) \
     -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
     "${OCI_CLI_IMAGE}" \
@@ -464,182 +376,35 @@ if docker run --rm \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
     --auth security_token \
-    --region "${OCI_REGION}" >/dev/null 2>&1; then
-    print_success "バケット '${OCI_BUCKET_NAME}' は既に存在します"
-else
-    print_info "バケット '${OCI_BUCKET_NAME}' を作成しています..."
-
-    # エラーで即座に終了しないように一時的に無効化
-    set +e
-    BUCKET_CREATE_OUTPUT=$(docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        os bucket create \
-        --compartment-id "${OCI_COMPARTMENT_ID}" \
-        --name "${OCI_BUCKET_NAME}" \
-        --namespace "${OCI_NAMESPACE}" \
-        --storage-tier Archive \
-        --auth security_token \
-        --region "${OCI_REGION}" 2>&1)
-    BUCKET_CREATE_EXIT=$?
-    
-    echo "${BUCKET_CREATE_OUTPUT}" | grep -q '"name" *: *"'"${OCI_BUCKET_NAME}"'"'
-    NAME_MATCH=$?
-    echo "${BUCKET_CREATE_OUTPUT}" | grep -q "BucketAlreadyExists"
-    BUCKET_EXISTS=$?
-    set -e
-
-    if [ ${NAME_MATCH} -eq 0 ]; then
-        print_success "バケット '${OCI_BUCKET_NAME}' を作成しました（Archive Storage）"
-    elif [ ${BUCKET_EXISTS} -eq 0 ]; then
-        print_success "バケット '${OCI_BUCKET_NAME}' は既に存在します"
-    else
-        # ネームスペース不一致エラーの自動修正を試行
-        echo "${BUCKET_CREATE_OUTPUT}" | grep -q "namespace in the URL.*must match"
-        NS_MISMATCH=$?
-
-        if [ ${NS_MISMATCH} -eq 0 ]; then
-            print_warning "ネームスペース不一致エラーを検出しました"
-
-            # エラーメッセージから正しいネームスペースを抽出
-            CORRECT_NS=$(echo "${BUCKET_CREATE_OUTPUT}" | \
-                grep -o "namespace of the account ('[^']*')" | \
-                cut -d"'" -f2)
-
-            if [ -n "${CORRECT_NS}" ] && [ "${CORRECT_NS}" != "${OCI_NAMESPACE}" ]; then
-                print_info "ネームスペースを自動修正: ${OCI_NAMESPACE} → ${CORRECT_NS}"
-                OCI_NAMESPACE="${CORRECT_NS}"
-                echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
-                echo ""
-
-                # 正しいネームスペースでバケット作成を再試行
-                print_info "バケット作成を再試行しています..."
-                set +e
-                BUCKET_CREATE_OUTPUT=$(docker run --rm \
-                    --user $(id -u):$(id -g) \
-                    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-                    "${OCI_CLI_IMAGE}" \
-                    os bucket create \
-                    --compartment-id "${OCI_COMPARTMENT_ID}" \
-                    --name "${OCI_BUCKET_NAME}" \
-                    --namespace "${OCI_NAMESPACE}" \
-                    --storage-tier Archive \
-                    --auth security_token \
-                    --debug \
-                    --region "${OCI_REGION}" 2>&1)
-                BUCKET_RETRY_EXIT=$?
-                
-                echo "${BUCKET_CREATE_OUTPUT}" | grep -q '"name" *: *"'"${OCI_BUCKET_NAME}"'"'
-                RETRY_SUCCESS=$?
-                echo "${BUCKET_CREATE_OUTPUT}" | grep -q "BucketAlreadyExists"
-                RETRY_BUCKET_EXISTS=$?
-                set -e
-
-                if [ ${RETRY_SUCCESS} -eq 0 ]; then
-                    print_success "バケット '${OCI_BUCKET_NAME}' を作成しました（Archive Storage）"
-                elif [ ${RETRY_BUCKET_EXISTS} -eq 0 ]; then
-                    print_success "バケット '${OCI_BUCKET_NAME}' は既に存在します"
-                else
-                    print_error "バケット作成に失敗しました（再試行後）"
-                    echo ""
-                    print_info "エラー詳細:"
-                    echo "${BUCKET_CREATE_OUTPUT}"
-                    echo ""
-                    exit 1
-                fi
-            else
-                print_error "ネームスペースの自動修正に失敗しました"
-                echo ""
-                print_info "エラー詳細:"
-                echo "${BUCKET_CREATE_OUTPUT}"
-                echo ""
-                exit 1
-            fi
-        else
-            # その他のエラー
-            print_error "バケットの作成に失敗しました"
-            echo ""
-            print_info "エラー詳細:"
-            echo "${BUCKET_CREATE_OUTPUT}"
-            echo ""
-            exit 1
-        fi
-    fi
-fi
-echo ""
-
-# バケット動作確認（テストファイルのアップロード）
-print_header "バケット動作確認"
-print_info "テストファイルをアップロードして、バケットが正常に動作することを確認します..."
-
-# テストファイルを作成
-TEST_FILE="${TEMP_DIR}/test-verification-$(date +%s).txt"
-echo "This is a test file to verify bucket access - $(date)" > "${TEST_FILE}"
-
-# テストファイルをアップロード
-set +e
-TEST_UPLOAD_OUTPUT=$(docker run --rm \
-    --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-    -v "${TEMP_DIR}:/tmp/upload" \
-    "${OCI_CLI_IMAGE}" \
-    os object put \
-    --bucket-name "${OCI_BUCKET_NAME}" \
-    --namespace "${OCI_NAMESPACE}" \
-    --file "/tmp/upload/$(basename ${TEST_FILE})" \
-    --name "$(basename ${TEST_FILE})" \
-    --auth security_token \
     --region "${OCI_REGION}" 2>&1)
-TEST_UPLOAD_EXIT=$?
+BUCKET_CHECK_EXIT=$?
 set -e
 
-if [ ${TEST_UPLOAD_EXIT} -eq 0 ]; then
-    print_success "テストファイルのアップロードに成功しました"
-    
-    # テストファイルを削除
-    print_info "テストファイルを削除しています..."
-    set +e
-    docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        os object delete \
-        --bucket-name "${OCI_BUCKET_NAME}" \
-        --namespace "${OCI_NAMESPACE}" \
-        --name "$(basename ${TEST_FILE})" \
-        --auth security_token \
-        --region "${OCI_REGION}" \
-        --force >/dev/null 2>&1
-    set -e
-    
-    # ローカルのテストファイルも削除
-    rm -f "${TEST_FILE}"
-    
-    print_success "バケットは正常に動作しています"
+if [ ${BUCKET_CHECK_EXIT} -eq 0 ]; then
+    print_success "バケット '${OCI_BUCKET_NAME}' が見つかりました"
 else
-    print_error "テストファイルのアップロードに失敗しました"
+    print_error "バケット '${OCI_BUCKET_NAME}' が見つかりません"
     echo ""
-    print_info "エラー詳細:"
-    echo "${TEST_UPLOAD_OUTPUT}"
+    print_header "セットアップ手順"
     echo ""
-    
-    # ローカルのテストファイルを削除
-    rm -f "${TEST_FILE}"
-    
-    # エラーの種類を判定
-    if echo "${TEST_UPLOAD_OUTPUT}" | grep -q "BucketNotFound"; then
-        print_error "バケットが見つかりません"
-        print_info "バケットが正常に作成されていない可能性があります"
-    elif echo "${TEST_UPLOAD_OUTPUT}" | grep -q "NotAuthorized\|not authorized"; then
-        print_error "権限が不足しています"
-        print_info "IAMポリシーが正しく設定されていない可能性があります"
-        print_info "以下のコマンドでOCIコンソールから手動で確認してください："
-        echo "  1. https://cloud.oracle.com/ にログイン"
-        echo "  2. Identity & Security → Policies"
-        echo "  3. 'immich-backup-bucket-policy' を確認"
-    fi
-    
+    print_info "ステップ1: リージョン '${OCI_REGION}' をサブスクライブ"
+    echo "  1. OCIコンソール（https://cloud.oracle.com/）にログイン"
+    echo "  2. 左上のメニュー → Governance & Administration → Region Management"
+    echo "  3. 'US East (Ashburn)' を探して 'Subscribe' ボタンをクリック"
+    echo "  4. サブスクライブ完了を待つ（数分かかる場合があります）"
+    echo ""
+    print_info "ステップ2: バケットを作成"
+    echo "  1. OCIコンソールで左上のメニュー → Storage → Buckets"
+    echo "  2. 左側のリージョン選択で 'US East (Ashburn)' を選択"
+    echo "  3. 'Create Bucket' ボタンをクリック"
+    echo "  4. 以下の設定で作成："
+    echo "     - Bucket Name: ${OCI_BUCKET_NAME}"
+    echo "     - Default Storage Tier: Archive"
+    echo "     - Encryption: Encrypt using Oracle managed keys"
+    echo "  5. 'Create' ボタンをクリック"
+    echo ""
+    print_info "セットアップ完了後、このスクリプトを再実行してください"
+    echo ""
     exit 1
 fi
 echo ""
@@ -770,7 +535,27 @@ if docker run --rm \
     echo "" | tee -a "${OCI_DIR}/last_backup.log"
 else
     print_error "アップロードに失敗しました"
+    echo ""
     print_info "詳細はログファイルを確認してください: ${OCI_DIR}/last_backup.log"
+    echo ""
+    
+    # バケットが存在しない場合のエラーメッセージ
+    print_header "バケットの作成方法"
+    echo ""
+    print_info "バケット '${OCI_BUCKET_NAME}' が存在しない可能性があります"
+    echo ""
+    print_info "以下の手順でバケットを作成してください："
+    echo "  1. OCIコンソール（https://cloud.oracle.com/）にログイン"
+    echo "  2. 左上のメニュー → Storage → Buckets"
+    echo "  3. 'Create Bucket' ボタンをクリック"
+    echo "  4. 以下の設定で作成："
+    echo "     - Bucket Name: ${OCI_BUCKET_NAME}"
+    echo "     - Default Storage Tier: Archive"
+    echo "     - Encryption: Encrypt using Oracle managed keys"
+    echo "  5. 'Create' ボタンをクリック"
+    echo ""
+    print_info "バケット作成後、このスクリプトを再実行してください"
+    echo ""
     exit 1
 fi
 
