@@ -7,9 +7,12 @@
 # Oracle Cloud Infrastructure (OCI)のArchive Storageにアップロードします。
 #
 # 使用方法:
-#   1. 初回実行時にブラウザでOCIにログインします
-#   2. パスコードを入力します（暗号化用）
-#   3. バックアップが自動的に圧縮・暗号化・アップロードされます
+#   ./backup.sh        - 通常のバックアップを実行
+#   ./backup.sh login  - OCI認証のみを実行（初回セットアップ、再認証時に便利）
+#
+#   1. 初回実行時または'login'モード時にブラウザでOCIにログインします
+#   2. パスコードを入力します（暗号化用、通常バックアップ時のみ）
+#   3. バックアップが自動的に圧縮・暗号化・アップロードされます（通常モードのみ）
 #
 # 暗号化方式: OpenSSL AES-256-GCM (認証付き暗号化)
 #
@@ -59,7 +62,7 @@ TEMP_DIR="${OCI_DIR}/temp"
 
 # OCI設定（デフォルト値）
 OCI_REGION="us-ashburn-1"
-OCI_HOME_REGION="ap-osaka-1"  # IAMポリシー作成用のホームリージョン
+OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
 OCI_BUCKET_NAME="immich-backup"
 OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
 OCI_NAMESPACE="${OCI_NAMESPACE:-}"
@@ -83,6 +86,26 @@ EXCLUDE_PATTERNS=(
 # ディレクトリの作成
 mkdir -p "${OCI_CONFIG_DIR}"
 mkdir -p "${TEMP_DIR}"
+
+# コマンドライン引数の処理
+COMMAND="${1:-}"
+
+case "${COMMAND}" in
+    login)
+        LOGIN_ONLY=true
+        ;;
+    "")
+        LOGIN_ONLY=false
+        ;;
+    *)
+        echo "使用方法: $0 [login]"
+        echo ""
+        echo "オプション:"
+        echo "  (なし)  - 通常のバックアップを実行"
+        echo "  login   - OCI認証のみを実行（バックアップは行わない）"
+        exit 1
+        ;;
+esac
 
 print_header "Immich OCI Archive Storage 暗号化バックアップ"
 echo ""
@@ -147,6 +170,76 @@ else
 fi
 echo ""
 
+# テナンシーIDの取得
+print_header "OCI設定情報の取得"
+if [ -f "${OCI_CONFIG_DIR}/config" ]; then
+    OCI_TENANCY_ID=$(grep "^tenancy=" "${OCI_CONFIG_DIR}/config" | cut -d'=' -f2)
+    if [ -n "${OCI_TENANCY_ID}" ]; then
+        print_success "テナンシーIDを取得しました"
+    else
+        print_warning "テナンシーIDの取得に失敗しました"
+    fi
+else
+    print_warning "設定ファイルが見つかりません"
+fi
+
+# ホームリージョンの取得（未設定の場合）
+if [ -z "${OCI_HOME_REGION}" ]; then
+    print_info "ホームリージョンを取得しています..."
+    
+    if [ -n "${OCI_TENANCY_ID}" ]; then
+        # tenancy情報からホームリージョンキーを取得
+        set +e
+        HOME_REGION_KEY=$(docker run --rm \
+            --user $(id -u):$(id -g) \
+            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+            "${OCI_CLI_IMAGE}" \
+            iam tenancy get \
+            --tenancy-id "${OCI_TENANCY_ID}" \
+            --auth security_token \
+            --query 'data."home-region-key"' \
+            --raw-output 2>&1)
+        HOME_REGION_EXIT=$?
+        set -e
+        
+        if [ ${HOME_REGION_EXIT} -eq 0 ] && [ -n "${HOME_REGION_KEY}" ]; then
+            # リージョンキーをリージョン名に変換
+            case "${HOME_REGION_KEY}" in
+                KIX) OCI_HOME_REGION="ap-osaka-1" ;;
+                NRT) OCI_HOME_REGION="ap-tokyo-1" ;;
+                IAD) OCI_HOME_REGION="us-ashburn-1" ;;
+                PHX) OCI_HOME_REGION="us-phoenix-1" ;;
+                LHR) OCI_HOME_REGION="uk-london-1" ;;
+                FRA) OCI_HOME_REGION="eu-frankfurt-1" ;;
+                AMS) OCI_HOME_REGION="eu-amsterdam-1" ;;
+                YYZ) OCI_HOME_REGION="ca-toronto-1" ;;
+                SYD) OCI_HOME_REGION="ap-sydney-1" ;;
+                GRU) OCI_HOME_REGION="sa-saopaulo-1" ;;
+                ICN) OCI_HOME_REGION="ap-seoul-1" ;;
+                BOM) OCI_HOME_REGION="ap-mumbai-1" ;;
+                ZRH) OCI_HOME_REGION="eu-zurich-1" ;;
+                JED) OCI_HOME_REGION="me-jeddah-1" ;;
+                YUL) OCI_HOME_REGION="ca-montreal-1" ;;
+                HYD) OCI_HOME_REGION="ap-hyderabad-1" ;;
+                MEL) OCI_HOME_REGION="ap-melbourne-1" ;;
+                *) 
+                    print_warning "未知のリージョンキー: ${HOME_REGION_KEY}"
+                    OCI_HOME_REGION="${OCI_REGION}" 
+                    ;;
+            esac
+            print_success "ホームリージョン: ${OCI_HOME_REGION} (${HOME_REGION_KEY})"
+        else
+            # フォールバック: 現在のリージョンを使用
+            print_warning "ホームリージョンの取得に失敗。${OCI_REGION}を使用します"
+            OCI_HOME_REGION="${OCI_REGION}"
+        fi
+    else
+        print_warning "テナンシーIDが不明なため、ホームリージョンを${OCI_REGION}に設定します"
+        OCI_HOME_REGION="${OCI_REGION}"
+    fi
+fi
+echo ""
+
 # OCI Namespaceの取得（未設定の場合）
 if [ -z "${OCI_NAMESPACE}" ]; then
     print_info "OCIネームスペースを取得しています..."
@@ -156,6 +249,22 @@ if [ -z "${OCI_NAMESPACE}" ]; then
 
     NS_GET_OUTPUT=$(docker run --rm \
         --user $(id -u):$(id -g) \
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        .
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
         os ns get --auth security_token --region "${OCI_REGION}" 2>&1)
@@ -262,14 +371,32 @@ if [ -z "${OCI_COMPARTMENT_ID}" ]; then
 fi
 echo ""
 
+# ログインのみモードの場合はここで終了
+if [ "${LOGIN_ONLY}" = true ]; then
+    echo ""
+    print_header "ログイン完了"
+    print_success "OCI認証情報の取得が完了しました"
+    echo ""
+    print_info "取得した情報:"
+    [ -n "${OCI_TENANCY_ID}" ] && echo "  - テナンシーID: ${OCI_TENANCY_ID}"
+    [ -n "${OCI_HOME_REGION}" ] && echo "  - ホームリージョン: ${OCI_HOME_REGION}"
+    [ -n "${OCI_NAMESPACE}" ] && echo "  - ネームスペース: ${OCI_NAMESPACE}"
+    [ -n "${OCI_COMPARTMENT_ID}" ] && echo "  - コンパートメントID: ${OCI_COMPARTMENT_ID}"
+    echo ""
+    print_info "認証情報は以下に保存されました:"
+    echo "  - ${OCI_CONFIG_DIR}/config"
+    echo "  - ${OCI_CONFIG_DIR}/sessions/"
+    [ -f "${OCI_CONFIG_DIR}/namespace" ] && echo "  - ${OCI_CONFIG_DIR}/namespace"
+    [ -f "${OCI_CONFIG_DIR}/compartment" ] && echo "  - ${OCI_CONFIG_DIR}/compartment"
+    echo ""
+    print_info "バックアップを実行するには:"
+    echo "  ./backup.sh"
+    exit 0
+fi
+
 # IAMポリシーの確認と作成
 print_header "IAM権限の確認"
 print_info "バケット管理用のIAMポリシーを確認しています..."
-
-# テナンシーIDを取得（configファイルから）
-if [ -f "${OCI_CONFIG_DIR}/config" ]; then
-    OCI_TENANCY_ID=$(grep "^tenancy=" "${OCI_CONFIG_DIR}/config" | cut -d'=' -f2)
-fi
 
 if [ -z "${OCI_TENANCY_ID}" ]; then
     print_warning "テナンシーIDが取得できませんでした。ポリシー確認をスキップします"
@@ -399,6 +526,7 @@ else
                     --namespace "${OCI_NAMESPACE}" \
                     --storage-tier Archive \
                     --auth security_token \
+                    --debug \
                     --region "${OCI_REGION}" 2>&1)
                 BUCKET_RETRY_EXIT=$?
                 
