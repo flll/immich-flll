@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -14,7 +14,7 @@
 #   2. パスコードを入力します（暗号化用、通常バックアップ時のみ）
 #   3. バックアップが自動的に圧縮・暗号化・アップロードされます（通常モードのみ）
 #
-# 暗号化方式: OpenSSL AES-256-GCM (認証付き暗号化)
+# 暗号化方式: OpenSSL AES-256-CBC
 #
 # 注意: このスクリプトは長時間実行されます（圧縮とアップロードのため）
 #=============================================================================
@@ -112,7 +112,7 @@ echo ""
 print_info "バックアップ元: ${IMMICH_ROOT}"
 print_info "OCI リージョン: ${OCI_REGION}"
 print_info "バケット名: ${OCI_BUCKET_NAME}"
-print_info "暗号化方式: OpenSSL AES-256-GCM"
+print_info "暗号化方式: OpenSSL AES-256-CBC"
 echo ""
 
 # OCI認証の確認と実行
@@ -476,7 +476,7 @@ print_info "圧縮と暗号化を実行しています..."
 echo ""
 
 if tar -czf - -C "${IMMICH_ROOT}" ${EXCLUDE_ARGS} . 2>/dev/null | \
-   openssl enc -aes-256-gcm -salt -pbkdf2 -pass pass:"${BACKUP_PASSWORD}" -out "${TEMP_DIR}/${BACKUP_FILENAME}"; then
+   openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"${BACKUP_PASSWORD}" -out "${TEMP_DIR}/${BACKUP_FILENAME}"; then
 
     # 圧縮後のサイズを取得
     COMPRESSED_SIZE=$(stat -f%z "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null || stat -c%s "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null)
