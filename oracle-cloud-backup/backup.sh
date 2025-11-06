@@ -21,6 +21,7 @@
 
 # グローバル変数
 REFRESH_PID=""
+SKIP_BACKUP_CREATION=false
 
 # クリーンアップ関数
 cleanup() {
@@ -449,93 +450,157 @@ REFRESH_PID=$!
 print_success "リフレッシュプロセスを起動しました (PID: ${REFRESH_PID})"
 echo ""
 
-# パスコードの入力
-print_header "暗号化パスコードの設定"
-print_warning "バックアップを暗号化するためのパスコードを入力してください"
-print_warning "このパスコードは復号化時に必要です。必ず安全に保管してください"
-echo ""
+# 既存の暗号化ファイルをチェック
+print_header "既存バックアップファイルのチェック"
+EXISTING_FILES=$(find "${TEMP_DIR}" -maxdepth 1 -name "*.tar.gz.enc" -type f 2>/dev/null | sort -r)
 
-while true; do
-    read -s -p "パスコードを入力してください: " BACKUP_PASSWORD
+if [ -n "${EXISTING_FILES}" ]; then
+    EXISTING_FILE=$(echo "${EXISTING_FILES}" | head -1)
+    EXISTING_FILENAME=$(basename "${EXISTING_FILE}")
+    EXISTING_SIZE=$(stat -f%z "${EXISTING_FILE}" 2>/dev/null || stat -c%s "${EXISTING_FILE}" 2>/dev/null)
+    EXISTING_SIZE_GB=$(echo "scale=2; ${EXISTING_SIZE} / 1024 / 1024 / 1024" | bc)
+    EXISTING_DATE=$(stat -f "%Sm" -t "%Y-%m-%d %H:%M:%S" "${EXISTING_FILE}" 2>/dev/null || stat -c "%y" "${EXISTING_FILE}" 2>/dev/null | cut -d'.' -f1)
+    
+    print_warning "既存の暗号化ファイルが見つかりました："
     echo ""
-    read -s -p "パスコードを再入力してください: " BACKUP_PASSWORD_CONFIRM
+    echo "  ファイル名: ${EXISTING_FILENAME}"
+    echo "  サイズ: ${EXISTING_SIZE_GB} GB"
+    echo "  作成日時: ${EXISTING_DATE}"
     echo ""
-
-    if [ "${BACKUP_PASSWORD}" = "${BACKUP_PASSWORD_CONFIRM}" ]; then
-        if [ -z "${BACKUP_PASSWORD}" ]; then
-            print_error "パスコードが空です。再度入力してください"
-            echo ""
-        else
-            print_success "パスコードが設定されました"
-            unset BACKUP_PASSWORD_CONFIRM
-            break
-        fi
-    else
-        print_error "パスコードが一致しません。再度入力してください"
+    
+    # 複数ファイルがある場合は一覧を表示
+    FILE_COUNT=$(echo "${EXISTING_FILES}" | wc -l | tr -d ' ')
+    if [ "${FILE_COUNT}" -gt 1 ]; then
+        OTHER_COUNT=$((FILE_COUNT - 1))
+        print_info "他に ${OTHER_COUNT} 個のファイルがあります（最新のファイルを表示）"
         echo ""
     fi
-done
-echo ""
-
-# バックアップ設定の表示
-print_header "バックアップ設定"
-print_info "除外するディレクトリ:"
-for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-    echo "  - ${pattern}"
-done
-echo ""
-print_info "バックアップファイル名: ${BACKUP_FILENAME}"
-print_info "出力先: ${TEMP_DIR}/${BACKUP_FILENAME}"
-echo ""
-
-# バックアップの圧縮と暗号化
-print_header "バックアップの作成"
-print_info "このプロセスは長時間（数時間）かかる場合があります"
-print_warning "プロセスを中断しないでください"
-echo ""
-
-# 除外パターンをtar用に変換
-EXCLUDE_ARGS=""
-for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-    EXCLUDE_ARGS="${EXCLUDE_ARGS} --exclude=${pattern}"
-done
-
-# 元のサイズを取得
-print_info "バックアップ対象のサイズを計算しています..."
-ORIGINAL_SIZE=$(du -sb "${IMMICH_ROOT}" ${EXCLUDE_ARGS} 2>/dev/null | cut -f1)
-ORIGINAL_SIZE_GB=$(echo "scale=2; ${ORIGINAL_SIZE} / 1024 / 1024 / 1024" | bc)
-print_success "対象サイズ: ${ORIGINAL_SIZE_GB} GB"
-echo ""
-
-# タイムスタンプの記録
-START_TIME=$(date +%s)
-echo "開始時刻: $(date '+%Y-%m-%d %H:%M:%S')" | tee "${OCI_DIR}/last_backup.log"
-
-# tar + gzip + OpenSSL暗号化（パイプライン）
-print_info "圧縮と暗号化を実行しています..."
-echo ""
-
-if tar -czf - -C "${IMMICH_ROOT}" ${EXCLUDE_ARGS} . 2>/dev/null | \
-   openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"${BACKUP_PASSWORD}" -out "${TEMP_DIR}/${BACKUP_FILENAME}"; then
-
-    # 圧縮後のサイズを取得
-    COMPRESSED_SIZE=$(stat -f%z "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null || stat -c%s "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null)
-    COMPRESSED_SIZE_GB=$(echo "scale=2; ${COMPRESSED_SIZE} / 1024 / 1024 / 1024" | bc)
-    COMPRESSION_RATIO=$(echo "scale=1; (1 - ${COMPRESSED_SIZE} / ${ORIGINAL_SIZE}) * 100" | bc)
-
+    
+    read -p "このファイルを再アップロードしますか？ (yes/no): " REUPLOAD_CONFIRM
     echo ""
-    print_success "圧縮と暗号化が完了しました"
-    print_info "元のサイズ: ${ORIGINAL_SIZE_GB} GB"
-    print_info "圧縮後のサイズ: ${COMPRESSED_SIZE_GB} GB"
-    print_info "圧縮率: ${COMPRESSION_RATIO}%"
-    echo ""
+    
+    if [ "${REUPLOAD_CONFIRM}" = "yes" ]; then
+        print_success "既存のファイルを使用します。圧縮・暗号化をスキップします"
+        SKIP_BACKUP_CREATION=true
+        BACKUP_FILENAME="${EXISTING_FILENAME}"
+        COMPRESSED_SIZE="${EXISTING_SIZE}"
+        COMPRESSED_SIZE_GB="${EXISTING_SIZE_GB}"
+        echo ""
+        print_info "スキップされる処理:"
+        echo "  - パスコード入力"
+        echo "  - バックアップの圧縮"
+        echo "  - ファイルの暗号化"
+        echo ""
+    else
+        print_info "新しいバックアップを作成します"
+        echo ""
+    fi
 else
-    print_error "圧縮または暗号化に失敗しました"
-    exit 1
+    print_info "既存の暗号化ファイルは見つかりませんでした"
+    echo ""
 fi
 
-# パスコードをクリア
-unset BACKUP_PASSWORD
+# パスコードの入力（新規バックアップの場合のみ）
+if [ "${SKIP_BACKUP_CREATION}" = false ]; then
+    print_header "暗号化パスコードの設定"
+    print_warning "バックアップを暗号化するためのパスコードを入力してください"
+    print_warning "このパスコードは復号化時に必要です。必ず安全に保管してください"
+    echo ""
+
+    while true; do
+        read -s -p "パスコードを入力してください: " BACKUP_PASSWORD
+        echo ""
+        read -s -p "パスコードを再入力してください: " BACKUP_PASSWORD_CONFIRM
+        echo ""
+
+        if [ "${BACKUP_PASSWORD}" = "${BACKUP_PASSWORD_CONFIRM}" ]; then
+            if [ -z "${BACKUP_PASSWORD}" ]; then
+                print_error "パスコードが空です。再度入力してください"
+                echo ""
+            else
+                print_success "パスコードが設定されました"
+                unset BACKUP_PASSWORD_CONFIRM
+                break
+            fi
+        else
+            print_error "パスコードが一致しません。再度入力してください"
+            echo ""
+        fi
+    done
+    echo ""
+
+    # バックアップ設定の表示
+    print_header "バックアップ設定"
+    print_info "除外するディレクトリ:"
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        echo "  - ${pattern}"
+    done
+    echo ""
+    print_info "バックアップファイル名: ${BACKUP_FILENAME}"
+    print_info "出力先: ${TEMP_DIR}/${BACKUP_FILENAME}"
+    echo ""
+fi
+
+# バックアップの圧縮と暗号化（新規バックアップの場合のみ）
+if [ "${SKIP_BACKUP_CREATION}" = false ]; then
+    print_header "バックアップの作成"
+    print_info "このプロセスは長時間（数時間）かかる場合があります"
+    print_warning "プロセスを中断しないでください"
+    echo ""
+
+    # 除外パターンをtar用に変換
+    EXCLUDE_ARGS=""
+    for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        EXCLUDE_ARGS="${EXCLUDE_ARGS} --exclude=${pattern}"
+    done
+
+    # 元のサイズを取得
+    print_info "バックアップ対象のサイズを計算しています..."
+    ORIGINAL_SIZE=$(du -sb "${IMMICH_ROOT}" ${EXCLUDE_ARGS} 2>/dev/null | cut -f1)
+    ORIGINAL_SIZE_GB=$(echo "scale=2; ${ORIGINAL_SIZE} / 1024 / 1024 / 1024" | bc)
+    print_success "対象サイズ: ${ORIGINAL_SIZE_GB} GB"
+    echo ""
+
+    # タイムスタンプの記録
+    START_TIME=$(date +%s)
+    echo "開始時刻: $(date '+%Y-%m-%d %H:%M:%S')" | tee "${OCI_DIR}/last_backup.log"
+
+    # tar + gzip + OpenSSL暗号化（パイプライン）
+    print_info "圧縮と暗号化を実行しています..."
+    echo ""
+
+    if tar -czf - -C "${IMMICH_ROOT}" ${EXCLUDE_ARGS} . 2>/dev/null | \
+       openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"${BACKUP_PASSWORD}" -out "${TEMP_DIR}/${BACKUP_FILENAME}"; then
+
+        # 圧縮後のサイズを取得
+        COMPRESSED_SIZE=$(stat -f%z "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null || stat -c%s "${TEMP_DIR}/${BACKUP_FILENAME}" 2>/dev/null)
+        COMPRESSED_SIZE_GB=$(echo "scale=2; ${COMPRESSED_SIZE} / 1024 / 1024 / 1024" | bc)
+        COMPRESSION_RATIO=$(echo "scale=1; (1 - ${COMPRESSED_SIZE} / ${ORIGINAL_SIZE}) * 100" | bc)
+
+        echo ""
+        print_success "圧縮と暗号化が完了しました"
+        print_info "元のサイズ: ${ORIGINAL_SIZE_GB} GB"
+        print_info "圧縮後のサイズ: ${COMPRESSED_SIZE_GB} GB"
+        print_info "圧縮率: ${COMPRESSION_RATIO}%"
+        echo ""
+    else
+        print_error "圧縮または暗号化に失敗しました"
+        exit 1
+    fi
+
+    # パスコードをクリア
+    unset BACKUP_PASSWORD
+else
+    # 既存ファイル再利用時のログ記録
+    START_TIME=$(date +%s)
+    echo "開始時刻: $(date '+%Y-%m-%d %H:%M:%S')" | tee "${OCI_DIR}/last_backup.log"
+    echo "既存ファイルを再利用: ${BACKUP_FILENAME}" | tee -a "${OCI_DIR}/last_backup.log"
+    echo ""
+    print_info "既存の暗号化ファイルを使用します"
+    print_info "ファイル: ${BACKUP_FILENAME}"
+    print_info "サイズ: ${COMPRESSED_SIZE_GB} GB"
+    echo ""
+fi
 
 # OCIへのアップロード
 print_header "OCI Archive Storageへのアップロード"
