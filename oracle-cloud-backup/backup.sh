@@ -19,8 +19,19 @@
 # 注意: このスクリプトは長時間実行されます（圧縮とアップロードのため）
 #=============================================================================
 
+# グローバル変数
+REFRESH_PID=""
+
 # クリーンアップ関数
 cleanup() {
+    # バックグラウンドのリフレッシュプロセスを停止
+    if [ -n "${REFRESH_PID:-}" ]; then
+        print_info "OCIセッションリフレッシュプロセスを停止しています..."
+        kill "${REFRESH_PID}" 2>/dev/null || true
+        wait "${REFRESH_PID}" 2>/dev/null || true
+    fi
+    
+    # パスワード変数のクリア
     if [ -n "${BACKUP_PASSWORD:-}" ]; then
         unset BACKUP_PASSWORD
     fi
@@ -31,6 +42,27 @@ cleanup() {
 
 # エラーハンドラ
 trap cleanup EXIT
+
+# OCI セッションリフレッシュ関数（バックグラウンドで実行）
+refresh_oci_session() {
+    local refresh_interval=1800  # 30分（1800秒）
+    
+    while true; do
+        sleep "${refresh_interval}"
+        
+        print_info "OCIセッションをリフレッシュしています..."
+        
+        if docker run --rm \
+            --user $(id -u):$(id -g) \
+            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+            "${OCI_CLI_IMAGE}" \
+            session refresh --region "${OCI_REGION}" >/dev/null 2>&1; then
+            print_success "OCIセッションのリフレッシュが完了しました ($(date '+%Y-%m-%d %H:%M:%S'))"
+        else
+            print_warning "OCIセッションのリフレッシュに失敗しました ($(date '+%Y-%m-%d %H:%M:%S'))"
+        fi
+    done
+}
 
 # カラー出力関数（update-machine-learning.shから採用）
 print_success() {
@@ -407,6 +439,14 @@ else
     echo ""
     exit 1
 fi
+echo ""
+
+# OCIセッションの自動リフレッシュを開始
+print_header "OCIセッションの自動リフレッシュ"
+print_info "長時間の処理に備えて、30分ごとにOCIセッションをリフレッシュします"
+refresh_oci_session &
+REFRESH_PID=$!
+print_success "リフレッシュプロセスを起動しました (PID: ${REFRESH_PID})"
 echo ""
 
 # パスコードの入力
