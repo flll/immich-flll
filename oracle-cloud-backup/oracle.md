@@ -1,154 +1,95 @@
-**Security Token Authentication Times Out During Long Multipart Uploads**
+# OCI CLI Token Does Not Refresh During Long Multipart Uploads
 
----
+## Issue Summary
 
-## Issue Description
-
-When uploading large files to OCI Object Storage using `oci os object put` with `--auth security_token`, the authentication fails with a `401 NotAuthenticated` error during long-running multipart uploads.
+OCI CLI continues to use the same session token throughout a long-running multipart upload operation, causing `401 NotAuthenticated` errors when the token expires (60 minutes).
 
 ## Environment
 
-- **OCI CLI Version**: 3.69.0
-- **Python SDK Version**: 2.162.0
-- **Authentication Method**: `--auth security_token`
-- **Storage Tier**: Archive
-- **File Size**: ~180GB (resulting in 1400+ parts with 128MB part size)
-- **Upload Duration**: 40+ minutes before failure
+- **OCI CLI**: 3.69.0
+- **Python SDK**: 2.162.0
+- **Authentication**: `--auth security_token`
+- **Operation**: `oci os object put` with multipart upload
+- **File Size**: ~180GB (1463 parts @ 128MB)
+- **Upload Duration**: 40+ minutes
 
-## Steps to Reproduce
+## Problem
 
-1. Authenticate using security token (session token from web console)
-2. Start a large multipart upload to Archive storage tier:
+The CLI reads the session token from `security_token_file` once at startup and reuses it for all subsequent API calls during the entire upload operation, even when the operation exceeds the token's 60-minute validity period.
 
-```bash
-docker run --rm \
-    --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-    -v "${TEMP_DIR}:/backup" \
-    "${OCI_CLI_IMAGE}" \
-    os object put \
-    --bucket-name "${OCI_BUCKET_NAME}" \
-    --namespace "${OCI_NAMESPACE}" \
-    --file "/backup/${BACKUP_FILENAME}" \
-    --name "${BACKUP_FILENAME}" \
-    --storage-tier Archive \
-    --part-size 128 \
-    --parallel-upload-count 15 \
-    --auth security_token \
-    --region "${OCI_REGION}" \
-    --debug
-```
+## Evidence from Logs
 
-3. Upload begins successfully but fails after ~30-40 minutes with 401 errors on individual upload_part operations
-
-## Error Message
+All requests throughout the 40-minute upload use the identical token:
 
 ```
-oci.exceptions.ServiceError: {
-  'target_service': 'object_storage', 
-  'status': 401, 
-  'code': 'NotAuthenticated', 
-  'opc-request-id': 'iad-1:fPhKAyW3D3LZ8bF7Rnd5ip6nP6hMbATmDX6J2SZAXaSAj4AuC2wBcfFS0QZBUlAX', 
-  'message': 'The required information to complete authentication was not provided.',
-  'operation_name': 'upload_part', 
-  'timestamp': '2025-11-07T05:02:47.289107+00:00'
-}
+Token issued: iat=1762488166 (04:23:06 UTC)
+Token expires: exp=1762491766 (05:23:06 UTC) - 60 minutes later
+First request: 04:23:06 GMT - Success
+Last success: 05:02:XX GMT
+First 401 error: 05:02:47 GMT - After ~40 minutes
 ```
 
-## Current Behavior
+All API calls contain the same `keyId="ST$eyJraWQiOi...` JWT token, confirming no token refresh occurred.
 
-- Security token expires or becomes invalid during the upload (typically after 30-40 minutes)
-- Individual `upload_part` operations fail with HTTP 401 even though the session token's `sess_exp` time has not been reached
-- The multipart upload cannot complete for large files
-- This affects Archive tier uploads particularly, as they tend to be slower than Standard tier
+## Root Cause Analysis
 
-## Expected Behavior
+### Scenario: Upload Failure + Retry
 
-One of the following solutions would address this issue:
+1. Initial upload runs for 29 minutes → Fails for unrelated reason
+2. Script retries immediately, continuing with same token
+3. Retry runs for another 29 minutes
+4. **Total time: 58 minutes with same token**
+5. Token expires at 60 minutes → 401 errors occur
 
-### 1. **Token Lifetime Extension** (Preferred)
-Allow session tokens to remain valid for longer periods (e.g., 60-90 minutes minimum) to accommodate long-running operations like large multipart uploads.
+The CLI does not:
+- Monitor token expiration time
+- Refresh the token from `security_token_file` during operation
+- Implement automatic token refresh for long operations
 
-### 2. **Configurable Token Policy** (Ideal)
-Allow users to configure session token lifetime through IAM policies based on their security requirements and use cases. For example:
+## Proposed Solutions
 
-```json
-{
-  "sessionTokenLifetime": "120m",
-  "allowedOperations": ["objectstorage:*"]
-}
-```
+### Option 1: Automatic Token Refresh (Preferred)
+Implement automatic token refresh within OCI CLI:
+- Monitor token expiration (`exp` claim in JWT)
+- Automatically re-read `security_token_file` before expiration
+- Refresh tokens proactively (e.g., every 10-45 minutes)
 
-### 3. **Automatic Token Refresh**
-Implement an automatic token refresh mechanism in the OCI CLI for long-running operations, similar to how other cloud providers handle this.
+### Option 2: Configurable Token Lifetime
+Allow users to configure session token lifetime via IAM policies:
+- Extend default from 60 minutes to 90-120 minutes
+- Provide flexibility based on security requirements
 
-### 4. **Better Documentation**
-Document the recommended authentication method and limitations for long-running uploads, including guidance on when to use API keys vs. session tokens.
+### Option 3: Better Error Handling
+When a 401 error occurs:
+- Check if `security_token_file` has been updated
+- Retry the failed operation with the new token
+- Provide clear guidance to users
 
-## Security Concerns
+## Security Impact
 
-**Why API Key Authentication is Not an Acceptable Workaround:**
+**Why API Key Authentication is NOT an acceptable workaround:**
+- Requires storing long-lived credentials on disk
+- Increases attack surface significantly
+- Session tokens are specifically designed for temporary operations like scheduled backups
 
-While API key authentication is often suggested as a workaround, it poses significant security risks:
+## Request
 
-1. **Persistent Credentials**: API keys are long-lived credentials that, if compromised, provide persistent access to the tenancy
-2. **Storage Risk**: Storing private keys on disk (especially in automated backup systems) increases the attack surface
-3. **Rotation Complexity**: API key rotation requires updating multiple systems and configurations
-4. **Audit Trail**: Session tokens provide better audit trails for temporary operations
-
-**Why Session Tokens are Superior for This Use Case:**
-
-1. **Time-Limited**: Session tokens automatically expire, limiting the window of vulnerability
-2. **Temporary Access**: Perfect for scheduled backup operations that run and complete
-3. **No Persistent Storage**: No need to store long-lived credentials on the system
-4. **Principle of Least Privilege**: Can be issued with specific, limited permissions
-
-## Impact
-
-This issue affects:
-- Automated backup systems using session tokens
-- Large file uploads (>100GB) to Archive storage
-- Users following security best practices by avoiding persistent API keys
-- Organizations with strict security policies requiring temporary credentials
-
-## Workaround (Current)
-
-The only current workaround is to use API key authentication, which requires:
-```bash
---auth api_key
-```
-
-However, this compromises security by requiring persistent storage of private keys.
-
-## Proposed Solution
-
-**We respectfully request that Oracle implement one or more of the following:**
-
-1. **Increase the default session token lifetime** from 30-40 minutes to at least 60-90 minutes for operations involving Object Storage multipart uploads
-2. **Make session token lifetime configurable** through IAM policies, allowing administrators to balance security and operational needs
-3. **Implement automatic token refresh** within the CLI for long-running operations
-4. **Add a specific authentication mode** for long-running operations that uses refresh tokens
+Please implement automatic token refresh in OCI CLI for long-running operations. This would:
+- Improve security by allowing continued use of temporary credentials
+- Support legitimate use cases (large backups, slow network connections)
+- Eliminate workarounds that compromise security
 
 ## Related Issues
 
-- oracle/oci-cli#68 - Not able to access buckets/objects from OCI CLI
+- oracle/oci-cli#68 - Not able to access buckets/objects
 - oracle/oci-cli#514 - OCI Authentication Error
 
 ## Additional Context
 
-This issue was discovered during automated backup operations where:
-- Backups run on a schedule (daily/weekly)
-- Files are typically 100-200GB in size
-- Archive storage tier is used for cost optimization
-- Security policies mandate the use of temporary credentials over persistent API keys
+This issue particularly affects:
+- Automated backup systems using session tokens
+- Uploads to Archive storage tier (slower than Standard)
+- Networks with limited bandwidth
+- Any operation exceeding 30-40 minutes
 
-We believe this is a common use case that affects many OCI users who prioritize security.
-
----
-
-## Contact Information
-
-This issue was reported by a user implementing automated backup solutions with security best practices in mind. If additional information or logs are needed, please let us know.
-
-Thank you for considering this enhancement request. We believe addressing this issue will significantly improve the security posture of automated backup and large file upload operations on OCI.
-
+A 10-minute token refresh interval would completely resolve this issue while maintaining security.
