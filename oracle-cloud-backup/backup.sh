@@ -1,4 +1,4 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -621,7 +621,8 @@ if docker run --rm \
     --name "${BACKUP_FILENAME}" \
     --storage-tier Archive \
     --part-size 128 \
-    --parallel-upload-count 10 \
+    --parallel-upload-count 15 \
+    --verify-checksum \
     --auth security_token \
     --region "${OCI_REGION}" \
     --debug 2>&1 | tee -a "${OCI_DIR}/last_backup.log"; then
