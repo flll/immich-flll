@@ -620,6 +620,7 @@ if docker run --rm \
     --file "/backup/${BACKUP_FILENAME}" \
     --name "${BACKUP_FILENAME}" \
     --storage-tier Archive \
+    --no-overwrite \
     --part-size 128 \
     --parallel-upload-count 15 \
     --verify-checksum \
