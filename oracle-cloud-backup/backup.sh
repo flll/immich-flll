@@ -128,7 +128,7 @@ if [ -d "${OCI_CONFIG_DIR}/sessions" ]; then
     rm -rf "${OCI_CONFIG_DIR}/sessions"
 fi
 
-if [ -f "${OCI_CONFIG_DIR}/config" ] && [ -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
+if [ -f "${OCI_CONFIG_DIR}/config" ] && { [ -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ] || [ -f "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" ]; }; then
     print_info "既存の認証情報が見つかりました。確認中..."
 
     # API Key認証の確認
@@ -138,11 +138,22 @@ if [ -f "${OCI_CONFIG_DIR}/config" ] && [ -f "${OCI_CONFIG_DIR}/oci_api_key.pem"
         "${OCI_CLI_IMAGE}" \
         iam region list >/dev/null 2>&1; then
         print_success "認証情報は有効です"
+        
+        # sessions/DEFAULT/にある場合は移動（下位互換性）
+        if [ -f "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" ] && [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
+            print_info "APIキーファイルを適切な場所に移動しています..."
+            mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" "${OCI_CONFIG_DIR}/oci_api_key.pem"
+            mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key_public.pem" "${OCI_CONFIG_DIR}/oci_api_key_public.pem"
+            sed -i 's|/oracle/.oci/sessions/DEFAULT/oci_api_key.pem|/oracle/.oci/oci_api_key.pem|' "${OCI_CONFIG_DIR}/config"
+            rm -rf "${OCI_CONFIG_DIR}/sessions"
+            print_success "APIキーの配置を完了しました"
+        fi
     else
         print_warning "認証情報が無効です。再認証が必要です"
         rm -f "${OCI_CONFIG_DIR}/config"
         rm -f "${OCI_CONFIG_DIR}/oci_api_key.pem"
         rm -f "${OCI_CONFIG_DIR}/oci_api_key_public.pem"
+        rm -rf "${OCI_CONFIG_DIR}/sessions"
     fi
 fi
 
@@ -159,6 +170,23 @@ if [ ! -f "${OCI_CONFIG_DIR}/config" ] || [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.
         "${OCI_CLI_IMAGE}" \
         setup bootstrap --region "${OCI_REGION}"; then
         print_success "OCI認証が完了しました"
+        
+        # APIキーファイルの再配置（sessions/DEFAULT/から移動）
+        if [ -f "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" ]; then
+            print_info "APIキーファイルを適切な場所に移動しています..."
+            
+            mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" "${OCI_CONFIG_DIR}/oci_api_key.pem"
+            mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key_public.pem" "${OCI_CONFIG_DIR}/oci_api_key_public.pem"
+            
+            # configファイルのパスを修正
+            sed -i 's|/oracle/.oci/sessions/DEFAULT/oci_api_key.pem|/oracle/.oci/oci_api_key.pem|' "${OCI_CONFIG_DIR}/config"
+            
+            # sessionsディレクトリを削除
+            rm -rf "${OCI_CONFIG_DIR}/sessions"
+            
+            print_success "APIキーの配置を完了しました"
+        fi
+        
         print_info "API Key認証が設定され、有効期限なしで使用できます"
     else
         print_error "OCI認証に失敗しました"
