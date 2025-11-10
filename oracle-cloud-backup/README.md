@@ -9,7 +9,7 @@ Oracle Cloud Infrastructure (OCI) の Archive Storage を使用して、Immich �
 - **暗号化方式**: OpenSSL AES-256-GCM（認証付き暗号化）
 - **バックアップ先**: OCI Archive Storage（米国リージョン）
 - **実行方式**: Docker Compose によるフォアグラウンド実行
-- **認証方式**: ブラウザベースの認証（Session Authentication）
+- **認証方式**: API Key認証（有効期限なし、長時間実行に対応）
 
 ## 🎯 特徴
 
@@ -34,17 +34,18 @@ Oracle Cloud Infrastructure (OCI) の Archive Storage を使用して、Immich �
 
 #### ステップ 1: OCI 認証（初回のみ）
 
-初回実行時はブラウザで OCI にログインする必要があります：
+初回実行時はブラウザで OCI にログインし、API Keyを自動生成・登録します：
 
 ```bash
 # 対話的に認証を実行（初回のみ）
 docker run --rm -it \
   -v $(pwd)/oci:/root/.oci \
+  -p 8181:8181 \
   ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6 \
-  session authenticate --region us-ashburn-1
+  setup bootstrap --region us-ashburn-1
 ```
 
-ブラウザが開くので、OCI にログインしてください。認証情報は `oci/` ディレクトリに保存されます。
+ブラウザが開くので、OCI にログインしてください。APIキーが自動的に生成され、OCIに登録されます。認証情報は `oci/` ディレクトリに保存され、**有効期限なし**で使用できます。
 
 ### 2. バックアップの実行
 
@@ -177,7 +178,8 @@ oracle-cloud-backup/
 ├── .gitignore             # Git除外設定
 └── oci/                   # OCI認証情報とログ（Gitで除外）
     ├── config             # OCI CLI設定
-    ├── sessions/          # セッション認証トークン
+    ├── oci_api_key.pem    # API秘密鍵
+    ├── oci_api_key_public.pem # API公開鍵
     ├── namespace          # OCIネームスペース
     ├── compartment        # コンパートメントID
     ├── last_backup.log    # 最後のバックアップログ
@@ -281,13 +283,14 @@ export OCI_COMPARTMENT_ID='ocid1.compartment.oc1..xxxxx'
 **解決策**:
 ```bash
 # 既存の認証情報を削除
-rm -rf oci/sessions oci/config
+rm -rf oci/config oci/oci_api_key*.pem
 
 # 再認証
 docker run --rm -it \
   -v $(pwd)/oci:/root/.oci \
+  -p 8181:8181 \
   ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6 \
-  session authenticate --region us-ashburn-1
+  setup bootstrap --region us-ashburn-1
 ```
 
 ### 復号化に失敗する
@@ -365,14 +368,14 @@ cat oci/last_backup.log
 - **パスコードの保護**: パスコードはメモリ内のみ（ファイル・環境変数に保存しない）
 - **認証情報の保護**: `oci/` ディレクトリは `.gitignore` で Git から除外されています
 - **読み取り専用マウント**: Immich データは読み取り専用でマウントされます
-- **セッション認証**: 短期トークンを使用し、定期的な再認証が必要です
+- **API Key認証**: 秘密鍵はローカルに安全に保管され、長時間実行に対応
 - **暗号化ファイルのみ保存**: クラウドには暗号化されたファイルのみ保存
 
 ### セキュリティのベストプラクティス
 
 1. **強力なパスコードを使用**: 最低16文字、大小英数字+記号を含める
 2. **パスコードを安全に保管**: パスワードマネージャーや安全な場所に記録
-3. **定期的な認証更新**: OCI セッショントークンの有効期限に注意
+3. **秘密鍵の保護**: `oci/oci_api_key.pem` を安全に保管し、第三者にアクセスさせない
 4. **バックアップのテスト**: 定期的に復元テストを実施
 
 ## 💰 コストについて

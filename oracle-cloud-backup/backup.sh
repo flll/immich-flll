@@ -20,18 +20,10 @@
 #=============================================================================
 
 # グローバル変数
-REFRESH_PID=""
 SKIP_BACKUP_CREATION=false
 
 # クリーンアップ関数
 cleanup() {
-    # バックグラウンドのリフレッシュプロセスを停止
-    if [ -n "${REFRESH_PID:-}" ]; then
-        print_info "OCIセッションリフレッシュプロセスを停止しています..."
-        kill "${REFRESH_PID}" 2>/dev/null || true
-        wait "${REFRESH_PID}" 2>/dev/null || true
-    fi
-    
     # パスワード変数のクリア
     if [ -n "${BACKUP_PASSWORD:-}" ]; then
         unset BACKUP_PASSWORD
@@ -41,27 +33,6 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-
-# OCI セッションリフレッシュ関数（バックグラウンドで実行）
-refresh_oci_session() {
-    local refresh_interval=1800
-    
-    while true; do
-        sleep "${refresh_interval}"
-        
-        print_info "OCIセッションをリフレッシュしています..."
-        
-        if docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-            "${OCI_CLI_IMAGE}" \
-            session refresh --region "${OCI_REGION}" >/dev/null 2>&1; then
-            print_success "OCIセッションのリフレッシュが完了しました ($(date '+%Y-%m-%d %H:%M:%S'))"
-        else
-            print_warning "OCIセッションのリフレッシュに失敗しました ($(date '+%Y-%m-%d %H:%M:%S'))"
-        fi
-    done
-}
 
 # カラー出力関数
 print_success() {
@@ -149,26 +120,36 @@ echo ""
 
 # OCI認証の確認と実行
 print_header "OCI認証"
-if [ -f "${OCI_CONFIG_DIR}/config" ] && [ -d "${OCI_CONFIG_DIR}/sessions/DEFAULT" ] 2>/dev/null; then
+
+# Session Token設定が残っている場合の警告
+if [ -d "${OCI_CONFIG_DIR}/sessions" ]; then
+    print_warning "古いSession Token設定が検出されました"
+    print_info "API Key認証に移行するため、古い設定を削除します..."
+    rm -rf "${OCI_CONFIG_DIR}/sessions"
+fi
+
+if [ -f "${OCI_CONFIG_DIR}/config" ] && [ -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
     print_info "既存の認証情報が見つかりました。確認中..."
 
-    # トークンの有効期限チェック（簡易的）
+    # API Key認証の確認
     if docker run --rm \
         --user $(id -u):$(id -g) \
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        iam region list --auth security_token >/dev/null 2>&1; then
+        iam region list >/dev/null 2>&1; then
         print_success "認証情報は有効です"
     else
-        print_warning "認証情報の有効期限が切れています。再認証が必要です"
-        rm -rf "${OCI_CONFIG_DIR}/sessions"
+        print_warning "認証情報が無効です。再認証が必要です"
         rm -f "${OCI_CONFIG_DIR}/config"
+        rm -f "${OCI_CONFIG_DIR}/oci_api_key.pem"
+        rm -f "${OCI_CONFIG_DIR}/oci_api_key_public.pem"
     fi
 fi
 
-if [ ! -f "${OCI_CONFIG_DIR}/config" ]; then
+if [ ! -f "${OCI_CONFIG_DIR}/config" ] || [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
     print_info "ブラウザでOCIにログインしてください..."
     print_warning "このプロセスには数分かかる場合があります"
+    print_info "APIキーが自動的に生成され、OCIにアップロードされます"
     echo ""
 
     if docker run --rm -it \
@@ -176,8 +157,9 @@ if [ ! -f "${OCI_CONFIG_DIR}/config" ]; then
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         -p 8181:8181 \
         "${OCI_CLI_IMAGE}" \
-        session authenticate --region "${OCI_REGION}" --profile-name DEFAULT; then
+        setup bootstrap --region "${OCI_REGION}"; then
         print_success "OCI認証が完了しました"
+        print_info "API Key認証が設定され、有効期限なしで使用できます"
     else
         print_error "OCI認証に失敗しました"
         exit 1
@@ -213,7 +195,6 @@ if [ -z "${OCI_HOME_REGION}" ]; then
             "${OCI_CLI_IMAGE}" \
             iam tenancy get \
             --tenancy-id "${OCI_TENANCY_ID}" \
-            --auth security_token \
             --query 'data."home-region-key"' \
             --raw-output 2>&1)
         HOME_REGION_EXIT=$?
@@ -268,7 +249,7 @@ if [ -z "${OCI_NAMESPACE}" ]; then
         --user $(id -u):$(id -g) \
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        os ns get --auth security_token --region "${OCI_REGION}" 2>&1)
+        os ns get --region "${OCI_REGION}" 2>&1)
     NS_GET_EXIT=$?
 
     if [ ${NS_GET_EXIT} -eq 0 ]; then
@@ -316,7 +297,6 @@ if [ -z "${OCI_NAMESPACE}" ]; then
         os bucket get \
         --bucket-name "__namespace_discovery_test__" \
         --namespace "test" \
-        --auth security_token \
         --region "${OCI_REGION}" 2>&1)
 
     # エラーメッセージから正しいネームスペースを抽出
@@ -353,7 +333,7 @@ if [ -z "${OCI_COMPARTMENT_ID}" ]; then
         --user $(id -u):$(id -g) \
         -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
         "${OCI_CLI_IMAGE}" \
-        iam compartment list --auth security_token --compartment-id-in-subtree true --limit 1 2>&1 | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
+        iam compartment list --compartment-id-in-subtree true --limit 1 2>&1 | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
 
     if [ -n "${OCI_COMPARTMENT_ID}" ]; then
         print_success "コンパートメントID取得完了"
@@ -366,7 +346,7 @@ if [ -z "${OCI_COMPARTMENT_ID}" ]; then
             --user $(id -u):$(id -g) \
             -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
             "${OCI_CLI_IMAGE}" \
-            iam compartment list --auth security_token --compartment-id-in-subtree true --limit 1
+            iam compartment list --compartment-id-in-subtree true --limit 1
         exit 1
     fi
 fi
@@ -407,7 +387,6 @@ BUCKET_CHECK_OUTPUT=$(docker run --rm \
     os bucket get \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
-    --auth security_token \
     --region "${OCI_REGION}" 2>&1)
 BUCKET_CHECK_EXIT=$?
 set -e
@@ -439,14 +418,6 @@ else
     echo ""
     exit 1
 fi
-echo ""
-
-# OCIセッションの自動リフレッシュを開始
-print_header "OCIセッションの自動リフレッシュ"
-print_info "長時間の処理に備えて、30分ごとにOCIセッションをリフレッシュします"
-refresh_oci_session &
-REFRESH_PID=$!
-print_success "リフレッシュプロセスを起動しました (PID: ${REFRESH_PID})"
 echo ""
 
 # 既存の暗号化ファイルをチェック
@@ -623,7 +594,6 @@ if docker run --rm \
     --part-size 128 \
     --parallel-upload-count 15 \
     --verify-checksum \
-    --auth security_token \
     --region "${OCI_REGION}" \
     --debug 2>&1 | tee -a "${OCI_DIR}/last_backup.log"; then
 
