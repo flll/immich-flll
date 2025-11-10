@@ -13,23 +13,19 @@ REGION="us-central1"
 BUCKET_NAME="immich-ml-models"
 
 print_success() {
-    echo -e "\033[32m✓ $1\033[0m"
+    echo -e "\033[32m $1\033[0m"
 }
 
 print_info() {
-    echo -e "\033[34mℹ $1\033[0m"
+    echo -e "\033[34m $1\033[0m"
 }
 
 print_warning() {
-    echo -e "\033[33m⚠ $1\033[0m"
+    echo -e "\033[33m $1\033[0m"
 }
 
 print_error() {
-    echo -e "\033[31m✗ $1\033[0m"
-}
-
-print_debug() {
-    echo -e "\033[90m🔍 $1\033[0m"
+    echo -e "\033[31m $1\033[0m"
 }
 
 print_header() {
@@ -255,7 +251,7 @@ sync_models_to_gcs() {
                 print_success "アップロード完了: ${model_type}/${local_model}"
                 ((uploaded_count++))
             else
-                print_debug "スキップ（既に同期済み）: ${model_type}/${local_model}"
+                print_info "スキップ（既に同期済み）: ${model_type}/${local_model}"
                 ((skipped_count++))
             fi
         done
