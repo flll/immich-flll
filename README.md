@@ -523,6 +523,18 @@ docker-compose up -d
 このリポジトリの設定ファイルは自由に使用できます。Immich本体のライセンスは[公式リポジトリ](https://github.com/immich-app/immich)を参照してください。
 
 ---
+https://www.reddit.com/r/computervision/comments/1l770f1/gpu_benchmarking_to_train_yolov8_model/?tl=ja
 
-**Enjoy your self-hosted photo management! 📸✨**
+やすいGPUを借りられる場所: https://www.shadeform.ai/
+
+| GCP GPU | VRAM | 主な用途 | 時間あたりの料金 |
+|-----------|---------------|----------|----------------|
+| H100 | 80GB (SXM) | 大規模AI/HPCトレーニング | カスタム見積もり |
+| A100 | 40GB または 80GB | AI/ML、データ分析、HPC | $3.52 〜 $4.71 |
+| L4 | 24GB | ML推論、グラフィックス、汎用 | $0.42 (T4より高性能) |
+| V100 | 16GB | AI/MLトレーニング、HPC | $2.48 〜 $2.97 |
+| P100 | 16GB | AI/ML、HPC | $1.46 |
+| T4 | 16GB | ML推論、グラフィックス、汎用 | $0.42 |
+| P4 | 8GB | ML推論、ビジュアライゼーション | 要確認 |
+| K80 | 12GB (GPUあたり) | 汎用コンピューティング | 要確認 |
 

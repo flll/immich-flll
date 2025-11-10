@@ -40,13 +40,11 @@ cleanup() {
         unset BACKUP_PASSWORD_CONFIRM
     fi
 }
-
-# エラーハンドラ
 trap cleanup EXIT
 
 # OCI セッションリフレッシュ関数（バックグラウンドで実行）
 refresh_oci_session() {
-    local refresh_interval=1800  # 30分（1800秒）
+    local refresh_interval=1800
     
     while true; do
         sleep "${refresh_interval}"
@@ -65,7 +63,7 @@ refresh_oci_session() {
     done
 }
 
-# カラー出力関数（update-machine-learning.shから採用）
+# カラー出力関数
 print_success() {
     echo -e "\033[32m✓ $1\033[0m"
 }
