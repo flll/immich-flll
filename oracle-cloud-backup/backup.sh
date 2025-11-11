@@ -35,7 +35,7 @@ DOCKER_COMPOSE_FILE="${IMMICH_ROOT}/docker-compose.yml"
 
 # OCI設定（デフォルト値）
 OCI_REGION="us-ashburn-1"
-OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
+OCI_HOME_REGION="${OCI_HOME_REGION:-}"
 OCI_BUCKET_NAME="immich-backup"
 OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
 OCI_NAMESPACE="${OCI_NAMESPACE:-}"
@@ -53,21 +53,6 @@ EXCLUDE_PATTERNS=(
     "models"
     "postgres"
 )
-
-# クリーンアップ関数
-cleanup() {
-    # パスワード変数のクリア
-    if [ -n "${BACKUP_PASSWORD:-}" ]; then
-        unset BACKUP_PASSWORD
-    fi
-    if [ -n "${BACKUP_PASSWORD_CONFIRM:-}" ]; then
-        unset BACKUP_PASSWORD_CONFIRM
-    fi
-    
-    # サービスの再起動（エラー時も実行）
-    restart_services
-}
-trap cleanup EXIT
 
 # カラー出力関数
 print_success() {
@@ -139,6 +124,21 @@ restart_services() {
         echo ""
     fi
 }
+
+# クリーンアップ関数
+cleanup() {
+    # パスワード変数のクリア
+    if [ -n "${BACKUP_PASSWORD:-}" ]; then
+        unset BACKUP_PASSWORD
+    fi
+    if [ -n "${BACKUP_PASSWORD_CONFIRM:-}" ]; then
+        unset BACKUP_PASSWORD_CONFIRM
+    fi
+    
+    # サービスの再起動（エラー時も実行）
+    restart_services
+}
+trap cleanup EXIT
 
 # OCI CLI実行関数
 run_oci_cli() {
@@ -319,9 +319,6 @@ echo ""
 if [ -z "${OCI_NAMESPACE}" ]; then
     print_info "OCIネームスペースを取得しています..."
 
-    # 方法1: os ns get で直接取得（最も正統的な方法）
-    print_info "方法1: os ns get でネームスペースを取得中..."
-
     NS_GET_OUTPUT=$(run_oci_cli os ns get --region "${OCI_REGION}" 2>&1)
     NS_GET_EXIT=$?
 
@@ -329,7 +326,7 @@ if [ -z "${OCI_NAMESPACE}" ]; then
         OCI_NAMESPACE=$(echo "${NS_GET_OUTPUT}" | grep -o '"data" *: *"[^"]*"' | head -1 | cut -d'"' -f4)
 
         if [ -n "${OCI_NAMESPACE}" ]; then
-            print_success "ネームスペース取得成功（方法1）: ${OCI_NAMESPACE}"
+            print_success "ネームスペース取得成功: ${OCI_NAMESPACE}"
             echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
         fi
     else
@@ -354,44 +351,20 @@ if [ -z "${OCI_NAMESPACE}" ]; then
             exit 1
         fi
 
-        print_warning "方法1でのネームスペース取得に失敗。方法2を試行します..."
+        print_error "ネームスペースの取得に失敗しました"
+        echo ""
+        print_warning "以下のコマンドで手動設定してください:"
+        echo "  1. OCIコンソールからネームスペースを確認"
+        echo "     OCIコンソール → プロファイル（右上）→ Tenancy → Object Storage Namespace"
+        echo "  2. 環境変数を設定して再実行"
+        echo "     $ export OCI_NAMESPACE='あなたのネームスペース'"
+        echo "     $ ./backup.sh"
+        echo ""
+        print_info "詳細なエラー情報:"
+        echo "${NS_GET_OUTPUT}"
+        echo ""
+        exit 1
     fi
-fi
-
-# 方法2: ダミーリクエストでエラーメッセージから正しいネームスペースを抽出
-if [ -z "${OCI_NAMESPACE}" ]; then
-    print_info "方法2: エラーメッセージからネームスペースを抽出中..."
-
-    # 存在しないバケットで意図的にエラーを起こし、正しいネームスペースを得る
-    NS_TEST_OUTPUT=$(run_oci_cli os bucket get \
-        --bucket-name "__namespace_discovery_test__" \
-        --namespace "test" \
-        --region "${OCI_REGION}" 2>&1)
-
-    # エラーメッセージから正しいネームスペースを抽出
-    # "namespace of the account ('axmroep1pvtu')" というパターンを探す
-    OCI_NAMESPACE=$(echo "${NS_TEST_OUTPUT}" | \
-        grep -o "namespace of the account ('[^']*')" | \
-        cut -d"'" -f2)
-
-    if [ -n "${OCI_NAMESPACE}" ]; then
-        print_success "ネームスペース取得成功（方法2）: ${OCI_NAMESPACE}"
-        echo "export OCI_NAMESPACE=${OCI_NAMESPACE}" > "${OCI_CONFIG_DIR}/namespace"
-    fi
-fi
-
-# 最終確認：取得に失敗した場合
-if [ -z "${OCI_NAMESPACE}" ]; then
-    print_error "ネームスペースの自動取得に失敗しました"
-    echo ""
-    print_warning "以下のコマンドで手動設定してください:"
-    echo "  1. OCIコンソールからネームスペースを確認"
-    echo "     OCIコンソール → プロファイル（右上）→ Tenancy → Object Storage Namespace"
-    echo "  2. 環境変数を設定して再実行"
-    echo "     $ export OCI_NAMESPACE='あなたのネームスペース'"
-    echo "     $ ./backup.sh"
-    echo ""
-    exit 1
 fi
 echo ""
 
@@ -573,15 +546,15 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
     echo ""
     
     if [ -f "${DOCKER_COMPOSE_FILE}" ]; then
-        print_info "サービスを停止しています（タイムアウト: 30秒）..."
+        print_info "サービスを停止しています（タイムアウト: 60秒）..."
         
-        if docker compose -f "${DOCKER_COMPOSE_FILE}" stop -t 30; then
+        if docker compose -f "${DOCKER_COMPOSE_FILE}" stop -t 60; then
             print_success "サービスの停止が完了しました"
             SERVICES_STOPPED=true
             
             # すべてのコンテナが停止したことを確認
             print_info "コンテナの停止状態を確認しています..."
-            local max_wait=60
+            local max_wait=65
             local elapsed=0
             local all_stopped=false
             
