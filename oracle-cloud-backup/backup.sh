@@ -20,7 +20,7 @@
 #=============================================================================
 
 # グローバル変数
-OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6"
+OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251105@sha256:353cbadd4c2840869567833d9bd63a170753b73c82236dcc27155666a3cd75dd"
 SKIP_BACKUP_CREATION=false
 SERVICES_STOPPED=false
 DOCKER_COMPOSE_FILE=""
