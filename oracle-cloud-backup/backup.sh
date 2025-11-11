@@ -20,7 +20,39 @@
 #=============================================================================
 
 # グローバル変数
+OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6"
 SKIP_BACKUP_CREATION=false
+SERVICES_STOPPED=false
+DOCKER_COMPOSE_FILE=""
+
+# 設定値
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OCI_DIR="${SCRIPT_DIR}/oci"
+OCI_CONFIG_DIR="${OCI_DIR}"
+IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMP_DIR="${OCI_DIR}/temp"
+DOCKER_COMPOSE_FILE="${IMMICH_ROOT}/docker-compose.yml"
+
+# OCI設定（デフォルト値）
+OCI_REGION="us-ashburn-1"
+OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
+OCI_BUCKET_NAME="immich-backup"
+OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
+OCI_NAMESPACE="${OCI_NAMESPACE:-}"
+
+# バックアップファイル名（タイムスタンプ付き）
+TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
+BACKUP_FILENAME="immich-backup-${TIMESTAMP}.tar.gz.enc"
+
+# 除外するディレクトリ
+EXCLUDE_PATTERNS=(
+    "photos/backups"
+    "photos/encoded-video"
+    "photos/thumbs"
+    "photos/profile"
+    "models"
+    "postgres"
+)
 
 # クリーンアップ関数
 cleanup() {
@@ -31,6 +63,9 @@ cleanup() {
     if [ -n "${BACKUP_PASSWORD_CONFIRM:-}" ]; then
         unset BACKUP_PASSWORD_CONFIRM
     fi
+    
+    # サービスの再起動（エラー時も実行）
+    restart_services
 }
 trap cleanup EXIT
 
@@ -53,6 +88,56 @@ print_error() {
 
 print_header() {
     echo -e "\033[1;36m=== $1 ===\033[0m"
+}
+
+restart_services() {
+    if [ "${SERVICES_STOPPED}" = true ] && [ -n "${DOCKER_COMPOSE_FILE}" ]; then
+        print_header "サービスの再起動"
+        print_info "Docker Composeサービスを再起動しています..."
+        
+        if docker compose -f "${DOCKER_COMPOSE_FILE}" start; then
+            print_success "サービスの再起動が完了しました"
+            SERVICES_STOPPED=false
+            
+            # ヘルスチェック
+            print_info "サービスのヘルスチェックを実行しています（最大5分）..."
+            local max_wait=300
+            local elapsed=0
+            local check_interval=5
+            
+            while [ ${elapsed} -lt ${max_wait} ]; do
+                local all_healthy=true
+                
+                # 主要サービスのステータスを確認
+                for service in immich_server immich_postgres immich_redis; do
+                    local status=$(docker inspect --format='{{.State.Health.Status}}' ${service} 2>/dev/null || echo "no-health")
+                    
+                    if [ "${status}" = "healthy" ] || [ "${status}" = "no-health" ]; then
+                        continue
+                    else
+                        all_healthy=false
+                        break
+                    fi
+                done
+                
+                if [ "${all_healthy}" = true ]; then
+                    print_success "すべてのサービスが正常に起動しました（${elapsed}秒経過）"
+                    return 0
+                fi
+                
+                sleep ${check_interval}
+                elapsed=$((elapsed + check_interval))
+                echo -n "."
+            done
+            
+            echo ""
+            print_warning "ヘルスチェックがタイムアウトしましたが、サービスは起動しています"
+        else
+            print_error "サービスの再起動に失敗しました"
+            print_warning "手動でサービスを起動してください: docker compose -f ${DOCKER_COMPOSE_FILE} start"
+        fi
+        echo ""
+    fi
 }
 
 # OCI CLI実行関数
@@ -78,36 +163,6 @@ run_oci_cli() {
         "$@"
 }
 
-# 設定値
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OCI_DIR="${SCRIPT_DIR}/oci"
-OCI_CONFIG_DIR="${OCI_DIR}"
-IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMP_DIR="${OCI_DIR}/temp"
-
-# OCI設定（デフォルト値）
-OCI_REGION="us-ashburn-1"
-OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
-OCI_BUCKET_NAME="immich-backup"
-OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
-OCI_NAMESPACE="${OCI_NAMESPACE:-}"
-
-# OCI CLIイメージ
-OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6"
-
-# バックアップファイル名（タイムスタンプ付き）
-TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
-BACKUP_FILENAME="immich-backup-${TIMESTAMP}.tar.gz.enc"
-
-# 除外するディレクトリ
-EXCLUDE_PATTERNS=(
-    "photos/backups"
-    "photos/encoded-video"
-    "photos/thumbs"
-    "photos/profile"
-    "models"
-    "postgres"
-)
 
 # ディレクトリの作成
 mkdir -p "${OCI_CONFIG_DIR}"
@@ -510,6 +565,54 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
     print_info "バックアップファイル名: ${BACKUP_FILENAME}"
     print_info "出力先: ${TEMP_DIR}/${BACKUP_FILENAME}"
     echo ""
+    
+    # Docker Composeサービスの停止
+    print_header "Docker Composeサービスの停止"
+    print_warning "整合性のあるバックアップを作成するため、すべてのサービスを停止します"
+    print_warning "サービスは数分〜数十分停止します"
+    echo ""
+    
+    if [ -f "${DOCKER_COMPOSE_FILE}" ]; then
+        print_info "サービスを停止しています（タイムアウト: 30秒）..."
+        
+        if docker compose -f "${DOCKER_COMPOSE_FILE}" stop -t 30; then
+            print_success "サービスの停止が完了しました"
+            SERVICES_STOPPED=true
+            
+            # すべてのコンテナが停止したことを確認
+            print_info "コンテナの停止状態を確認しています..."
+            local max_wait=60
+            local elapsed=0
+            local all_stopped=false
+            
+            while [ ${elapsed} -lt ${max_wait} ]; do
+                local running_containers=$(docker compose -f "${DOCKER_COMPOSE_FILE}" ps -q --status running 2>/dev/null | wc -l | tr -d ' ')
+                
+                if [ "${running_containers}" -eq 0 ]; then
+                    all_stopped=true
+                    break
+                fi
+                
+                sleep 2
+                elapsed=$((elapsed + 2))
+            done
+            
+            if [ "${all_stopped}" = true ]; then
+                print_success "すべてのコンテナが停止しました"
+            else
+                print_error "一部のコンテナが停止していません"
+                print_warning "バックアップを続行しますが、整合性に問題がある可能性があります"
+            fi
+        else
+            print_error "サービスの停止に失敗しました"
+            print_warning "バックアップを中止します"
+            exit 1
+        fi
+    else
+        print_error "docker-compose.ymlが見つかりません: ${DOCKER_COMPOSE_FILE}"
+        print_warning "サービスを停止せずにバックアップを続行します"
+    fi
+    echo ""
 fi
 
 # バックアップの圧縮と暗号化（新規バックアップの場合のみ）
@@ -605,6 +708,9 @@ if run_oci_cli os object put \
     echo "終了時刻: $(date '+%Y-%m-%d %H:%M:%S')" | tee -a "${OCI_DIR}/last_backup.log"
     echo "所要時間: ${HOURS}時間 ${MINUTES}分 ${SECONDS}秒" | tee -a "${OCI_DIR}/last_backup.log"
     echo "" | tee -a "${OCI_DIR}/last_backup.log"
+    
+    # アップロード成功後、サービスを再起動
+    restart_services
 else
     print_error "アップロードに失敗しました"
     echo ""
