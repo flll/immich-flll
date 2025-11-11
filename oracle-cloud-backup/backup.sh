@@ -1,4 +1,4 @@
-#!/bin/bash -e
+#!/bin/bash -ex
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -19,8 +19,21 @@
 # 注意: このスクリプトは長時間実行されます（圧縮とアップロードのため）
 #=============================================================================
 
-# グローバル変数
-SKIP_BACKUP_CREATION=false
+# OCI設定 (設定変更しなくて良い)
+OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251105@sha256:353cbadd4c2840869567833d9bd63a170753b73c82236dcc27155666a3cd75dd"
+OCI_REGION="us-ashburn-1"
+OCI_HOME_REGION="${OCI_HOME_REGION:-}"
+OCI_BUCKET_NAME="immich-backup"
+OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
+OCI_NAMESPACE="${OCI_NAMESPACE:-}"
+
+# 設定値
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OCI_DIR="${SCRIPT_DIR}/oci"
+OCI_CONFIG_DIR="${OCI_DIR}"
+IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMP_DIR="${OCI_DIR}/temp"
+
 
 # クリーンアップ関数
 cleanup() {
@@ -34,7 +47,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# カラー出力関数
+# カラー出力関数とグローバル変数
 print_success() {
     echo -e "\033[32m $1\033[0m"
 }
@@ -55,24 +68,11 @@ print_header() {
     echo -e "\033[1;36m=== $1 ===\033[0m"
 }
 
-# 設定値
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OCI_DIR="${SCRIPT_DIR}/oci"
-OCI_CONFIG_DIR="${OCI_DIR}"
-IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMP_DIR="${OCI_DIR}/temp"
+SKIP_BACKUP_CREATION=false
 
-# OCI設定（デフォルト値）
-OCI_REGION="us-ashburn-1"
-OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
-OCI_BUCKET_NAME="immich-backup"
-OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
-OCI_NAMESPACE="${OCI_NAMESPACE:-}"
 
-# OCI CLIイメージ
-OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6"
 
-# バックアップファイル名（タイムスタンプ付き）
+# バックアップファイルめい
 TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
 BACKUP_FILENAME="immich-backup-${TIMESTAMP}.tar.gz.enc"
 
@@ -83,16 +83,13 @@ EXCLUDE_PATTERNS=(
     "photos/thumbs"
     "photos/profile"
     "models"
-    "postgres"
 )
 
 # ディレクトリの作成
 mkdir -p "${OCI_CONFIG_DIR}"
 mkdir -p "${TEMP_DIR}"
 
-# コマンドライン引数の処理
 COMMAND="${1:-}"
-
 case "${COMMAND}" in
     login)
         LOGIN_ONLY=true
@@ -139,7 +136,7 @@ if [ -f "${OCI_CONFIG_DIR}/config" ] && { [ -f "${OCI_CONFIG_DIR}/oci_api_key.pe
         iam region list >/dev/null 2>&1; then
         print_success "認証情報は有効です"
         
-        # sessions/DEFAULT/にある場合は移動（下位互換性）
+        # sessions/DEFAULT/にある場合は移動
         if [ -f "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" ] && [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
             print_info "APIキーファイルを適切な場所に移動しています..."
             mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" "${OCI_CONFIG_DIR}/oci_api_key.pem"
@@ -210,12 +207,11 @@ else
     print_warning "設定ファイルが見つかりません"
 fi
 
-# ホームリージョンの取得（未設定の場合）
+# ホームリージョンの取得
 if [ -z "${OCI_HOME_REGION}" ]; then
     print_info "ホームリージョンを取得しています..."
     
     if [ -n "${OCI_TENANCY_ID}" ]; then
-        # tenancy情報からホームリージョンキーを取得
         set +e
         HOME_REGION_KEY=$(docker run --rm \
             --user $(id -u):$(id -g) \
@@ -230,30 +226,19 @@ if [ -z "${OCI_HOME_REGION}" ]; then
         
         if [ ${HOME_REGION_EXIT} -eq 0 ] && [ -n "${HOME_REGION_KEY}" ]; then
             # リージョンキーをリージョン名に変換
-            case "${HOME_REGION_KEY}" in
-                KIX) OCI_HOME_REGION="ap-osaka-1" ;;
-                NRT) OCI_HOME_REGION="ap-tokyo-1" ;;
-                IAD) OCI_HOME_REGION="us-ashburn-1" ;;
-                PHX) OCI_HOME_REGION="us-phoenix-1" ;;
-                LHR) OCI_HOME_REGION="uk-london-1" ;;
-                FRA) OCI_HOME_REGION="eu-frankfurt-1" ;;
-                AMS) OCI_HOME_REGION="eu-amsterdam-1" ;;
-                YYZ) OCI_HOME_REGION="ca-toronto-1" ;;
-                SYD) OCI_HOME_REGION="ap-sydney-1" ;;
-                GRU) OCI_HOME_REGION="sa-saopaulo-1" ;;
-                ICN) OCI_HOME_REGION="ap-seoul-1" ;;
-                BOM) OCI_HOME_REGION="ap-mumbai-1" ;;
-                ZRH) OCI_HOME_REGION="eu-zurich-1" ;;
-                JED) OCI_HOME_REGION="me-jeddah-1" ;;
-                YUL) OCI_HOME_REGION="ca-montreal-1" ;;
-                HYD) OCI_HOME_REGION="ap-hyderabad-1" ;;
-                MEL) OCI_HOME_REGION="ap-melbourne-1" ;;
-                *) 
-                    print_warning "未知のリージョンキー: ${HOME_REGION_KEY}"
-                    OCI_HOME_REGION="${OCI_REGION}" 
-                    ;;
-            esac
-            print_success "ホームリージョン: ${OCI_HOME_REGION} (${HOME_REGION_KEY})"
+            OCI_HOME_REGION=$(docker run --rm \
+                --user $(id -u):$(id -g) \
+                -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+                "${OCI_CLI_IMAGE}" \
+                iam region list --output json 2>/dev/null | \
+                jq -r ".data[] | select(.key == \"${HOME_REGION_KEY}\") | .name")
+            
+            if [ -z "${OCI_HOME_REGION}" ]; then
+                print_warning "リージョンキー '${HOME_REGION_KEY}' が見つかりません。${OCI_REGION}を使用します"
+                OCI_HOME_REGION="${OCI_REGION}"
+            else
+                print_success "ホームリージョン: ${OCI_HOME_REGION} (${HOME_REGION_KEY})"
+            fi
         else
             # フォールバック: 現在のリージョンを使用
             print_warning "ホームリージョンの取得に失敗。${OCI_REGION}を使用します"

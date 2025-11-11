@@ -15,51 +15,24 @@ services:
   oci-backup:
     image: ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6
     container_name: immich_oci_backup
-    
-    # 現在のユーザー権限で実行（rootless）
     user: "${UID:-1000}:${GID:-1000}"
-    
     ports:
       - "8181:8181"
-    
-    # 対話的入力を有効化（パスコード入力用）
     stdin_open: true
     tty: true
-    
-    # バックアップスクリプトを実行
     command: /bin/bash /scripts/backup.sh
-    
-    # ボリュームマウント
     volumes:
-      # バックアップスクリプト
       - ./backup.sh:/scripts/backup.sh:ro
-      
-      # OCI認証情報と設定（非rootユーザー用のパス）
       - ./oci:/oracle/.oci
-      
-      # Immichデータ（読み取り専用）
       - /mnt/hdd_blue/immich-app:/mnt/hdd_blue/immich-app:ro
-    
-    # 環境変数（オプション：デフォルト値を上書きする場合）
     environment:
-      # OCIリージョン（デフォルト: us-ashburn-1）
       - OCI_REGION=${OCI_REGION:-us-ashburn-1}
-      
-      # バケット名（デフォルト: immich-backup）
       - OCI_BUCKET_NAME=${OCI_BUCKET_NAME:-immich-backup}
-      
-      # コンパートメントID（オプション：スクリプトが自動取得）
       - OCI_COMPARTMENT_ID=${OCI_COMPARTMENT_ID:-}
-      
-      # ネームスペース（オプション：スクリプトが自動取得）
       - OCI_NAMESPACE=${OCI_NAMESPACE:-}
-    
-    # ログドライバー設定
     logging:
       driver: "json-file"
       options:
         max-size: "100m"
         max-file: "3"
-    
-    # 再起動ポリシー（エラー時は再起動しない）
     restart: "no"
