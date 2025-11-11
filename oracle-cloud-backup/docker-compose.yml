@@ -36,3 +36,17 @@ services:
         max-size: "100m"
         max-file: "3"
     restart: "no"
+
+  # OCI CLIツール（手動操作用）
+  oci-cli:
+    image: ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6
+    user: "${UID:-1000}:${GID:-1000}"
+    stdin_open: true
+    tty: true
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./oci:/oracle/.oci
+    profiles:
+      - tools
+    restart: "no"

@@ -19,21 +19,8 @@
 # 注意: このスクリプトは長時間実行されます（圧縮とアップロードのため）
 #=============================================================================
 
-# OCI設定 (設定変更しなくて良い)
-OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251105@sha256:353cbadd4c2840869567833d9bd63a170753b73c82236dcc27155666a3cd75dd"
-OCI_REGION="us-ashburn-1"
-OCI_HOME_REGION="${OCI_HOME_REGION:-}"
-OCI_BUCKET_NAME="immich-backup"
-OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
-OCI_NAMESPACE="${OCI_NAMESPACE:-}"
-
-# 設定値
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-OCI_DIR="${SCRIPT_DIR}/oci"
-OCI_CONFIG_DIR="${OCI_DIR}"
-IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEMP_DIR="${OCI_DIR}/temp"
-
+# グローバル変数
+SKIP_BACKUP_CREATION=false
 
 # クリーンアップ関数
 cleanup() {
@@ -47,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# カラー出力関数とグローバル変数
+# カラー出力関数
 print_success() {
     echo -e "\033[32m $1\033[0m"
 }
@@ -68,11 +55,47 @@ print_header() {
     echo -e "\033[1;36m=== $1 ===\033[0m"
 }
 
-SKIP_BACKUP_CREATION=false
+# OCI CLI実行関数
+run_oci_cli() {
+    local interactive=false
+    local extra_args=""
+    
+    # 対話的コマンドの判定
+    if [[ "$*" =~ (session|setup|authenticate|bootstrap) ]]; then
+        interactive=true
+        extra_args="-it -p 8181:8181"
+    fi
+    
+    # アップロード時のvolume追加判定
+    if [[ "$*" =~ "os object put" ]]; then
+        extra_args="${extra_args} -v ${TEMP_DIR}:/backup"
+    fi
+    
+    docker run --rm ${extra_args} \
+        --user $(id -u):$(id -g) \
+        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
+        "${OCI_CLI_IMAGE}" \
+        "$@"
+}
 
+# 設定値
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OCI_DIR="${SCRIPT_DIR}/oci"
+OCI_CONFIG_DIR="${OCI_DIR}"
+IMMICH_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TEMP_DIR="${OCI_DIR}/temp"
 
+# OCI設定（デフォルト値）
+OCI_REGION="us-ashburn-1"
+OCI_HOME_REGION="${OCI_HOME_REGION:-}"  # 空の場合は動的に取得
+OCI_BUCKET_NAME="immich-backup"
+OCI_COMPARTMENT_ID="${OCI_COMPARTMENT_ID:-}"
+OCI_NAMESPACE="${OCI_NAMESPACE:-}"
 
-# バックアップファイルめい
+# OCI CLIイメージ
+OCI_CLI_IMAGE="ghcr.io/oracle/oci-cli:20251029@sha256:ee374e857a438a7a1a4524c1398a6c43ed097c8f5b1e9a0e1ca05b7d01896eb6"
+
+# バックアップファイル名（タイムスタンプ付き）
 TIMESTAMP=$(date '+%Y-%m-%d-%H%M%S')
 BACKUP_FILENAME="immich-backup-${TIMESTAMP}.tar.gz.enc"
 
@@ -83,13 +106,16 @@ EXCLUDE_PATTERNS=(
     "photos/thumbs"
     "photos/profile"
     "models"
+    "postgres"
 )
 
 # ディレクトリの作成
 mkdir -p "${OCI_CONFIG_DIR}"
 mkdir -p "${TEMP_DIR}"
 
+# コマンドライン引数の処理
 COMMAND="${1:-}"
+
 case "${COMMAND}" in
     login)
         LOGIN_ONLY=true
@@ -129,14 +155,10 @@ if [ -f "${OCI_CONFIG_DIR}/config" ] && { [ -f "${OCI_CONFIG_DIR}/oci_api_key.pe
     print_info "既存の認証情報が見つかりました。確認中..."
 
     # API Key認証の確認
-    if docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        iam region list >/dev/null 2>&1; then
+    if run_oci_cli iam region list >/dev/null 2>&1; then
         print_success "認証情報は有効です"
         
-        # sessions/DEFAULT/にある場合は移動
+        # sessions/DEFAULT/にある場合は移動（下位互換性）
         if [ -f "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" ] && [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.pem" ]; then
             print_info "APIキーファイルを適切な場所に移動しています..."
             mv "${OCI_CONFIG_DIR}/sessions/DEFAULT/oci_api_key.pem" "${OCI_CONFIG_DIR}/oci_api_key.pem"
@@ -160,12 +182,7 @@ if [ ! -f "${OCI_CONFIG_DIR}/config" ] || [ ! -f "${OCI_CONFIG_DIR}/oci_api_key.
     print_info "APIキーが自動的に生成され、OCIにアップロードされます"
     echo ""
 
-    if docker run --rm -it \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        -p 8181:8181 \
-        "${OCI_CLI_IMAGE}" \
-        setup bootstrap --region "${OCI_REGION}"; then
+    if run_oci_cli setup bootstrap --region "${OCI_REGION}"; then
         print_success "OCI認証が完了しました"
         
         # APIキーファイルの再配置（sessions/DEFAULT/から移動）
@@ -207,30 +224,22 @@ else
     print_warning "設定ファイルが見つかりません"
 fi
 
-# ホームリージョンの取得
+# ホームリージョンの取得（未設定の場合）
 if [ -z "${OCI_HOME_REGION}" ]; then
     print_info "ホームリージョンを取得しています..."
     
     if [ -n "${OCI_TENANCY_ID}" ]; then
-        set +e
-        HOME_REGION_KEY=$(docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-            "${OCI_CLI_IMAGE}" \
-            iam tenancy get \
+        
+        HOME_REGION_KEY=$(run_oci_cli iam tenancy get \
             --tenancy-id "${OCI_TENANCY_ID}" \
             --query 'data."home-region-key"' \
             --raw-output 2>&1)
         HOME_REGION_EXIT=$?
-        set -e
+        
         
         if [ ${HOME_REGION_EXIT} -eq 0 ] && [ -n "${HOME_REGION_KEY}" ]; then
-            # リージョンキーをリージョン名に変換
-            OCI_HOME_REGION=$(docker run --rm \
-                --user $(id -u):$(id -g) \
-                -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-                "${OCI_CLI_IMAGE}" \
-                iam region list --output json 2>/dev/null | \
+            # リージョンキーをリージョン名に変換（動的検索）
+            OCI_HOME_REGION=$(run_oci_cli iam region list --output json 2>/dev/null | \
                 jq -r ".data[] | select(.key == \"${HOME_REGION_KEY}\") | .name")
             
             if [ -z "${OCI_HOME_REGION}" ]; then
@@ -258,11 +267,7 @@ if [ -z "${OCI_NAMESPACE}" ]; then
     # 方法1: os ns get で直接取得（最も正統的な方法）
     print_info "方法1: os ns get でネームスペースを取得中..."
 
-    NS_GET_OUTPUT=$(docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        os ns get --region "${OCI_REGION}" 2>&1)
+    NS_GET_OUTPUT=$(run_oci_cli os ns get --region "${OCI_REGION}" 2>&1)
     NS_GET_EXIT=$?
 
     if [ ${NS_GET_EXIT} -eq 0 ]; then
@@ -303,11 +308,7 @@ if [ -z "${OCI_NAMESPACE}" ]; then
     print_info "方法2: エラーメッセージからネームスペースを抽出中..."
 
     # 存在しないバケットで意図的にエラーを起こし、正しいネームスペースを得る
-    NS_TEST_OUTPUT=$(docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        os bucket get \
+    NS_TEST_OUTPUT=$(run_oci_cli os bucket get \
         --bucket-name "__namespace_discovery_test__" \
         --namespace "test" \
         --region "${OCI_REGION}" 2>&1)
@@ -342,11 +343,7 @@ echo ""
 # Compartment IDの取得（未設定の場合）
 if [ -z "${OCI_COMPARTMENT_ID}" ]; then
     print_info "コンパートメントIDを取得しています..."
-    OCI_COMPARTMENT_ID=$(docker run --rm \
-        --user $(id -u):$(id -g) \
-        -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-        "${OCI_CLI_IMAGE}" \
-        iam compartment list --compartment-id-in-subtree true --limit 1 2>&1 | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
+    OCI_COMPARTMENT_ID=$(run_oci_cli iam compartment list --compartment-id-in-subtree true --limit 1 2>&1 | grep -o '"id" *: *"ocid1.compartment[^"]*"' | head -1 | cut -d'"' -f4)
 
     if [ -n "${OCI_COMPARTMENT_ID}" ]; then
         print_success "コンパートメントID取得完了"
@@ -355,11 +352,7 @@ if [ -z "${OCI_COMPARTMENT_ID}" ]; then
         print_error "コンパートメントIDの取得に失敗しました"
         print_warning "OCI_COMPARTMENT_ID環境変数を手動で設定してください"
         print_info "デバッグ出力を確認中..."
-        docker run --rm \
-            --user $(id -u):$(id -g) \
-            -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-            "${OCI_CLI_IMAGE}" \
-            iam compartment list --compartment-id-in-subtree true --limit 1
+        run_oci_cli iam compartment list --compartment-id-in-subtree true --limit 1
         exit 1
     fi
 fi
@@ -392,17 +385,12 @@ fi
 print_header "バケットの確認"
 print_info "バケット '${OCI_BUCKET_NAME}' の存在を確認しています..."
 
-set +e
-BUCKET_CHECK_OUTPUT=$(docker run --rm \
-    --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-    "${OCI_CLI_IMAGE}" \
-    os bucket get \
+BUCKET_CHECK_OUTPUT=$(run_oci_cli os bucket get \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
     --region "${OCI_REGION}" 2>&1)
 BUCKET_CHECK_EXIT=$?
-set -e
+
 
 if [ ${BUCKET_CHECK_EXIT} -eq 0 ]; then
     print_success "バケット '${OCI_BUCKET_NAME}' が見つかりました"
@@ -592,12 +580,7 @@ print_info "サイズ: ${COMPRESSED_SIZE_GB} GB"
 print_warning "このプロセスは数時間かかる場合があります"
 echo ""
 
-if docker run --rm \
-    --user $(id -u):$(id -g) \
-    -v "${OCI_CONFIG_DIR}:/oracle/.oci" \
-    -v "${TEMP_DIR}:/backup" \
-    "${OCI_CLI_IMAGE}" \
-    os object put \
+if run_oci_cli os object put \
     --bucket-name "${OCI_BUCKET_NAME}" \
     --namespace "${OCI_NAMESPACE}" \
     --file "/backup/${BACKUP_FILENAME}" \
