@@ -1,4 +1,4 @@
-#!/bin/bash -ex
+#!/bin/bash -e
 
 #=============================================================================
 # Immich OCI Archive Storage 暗号化バックアップスクリプト
@@ -288,13 +288,13 @@ if [ -z "${OCI_HOME_REGION}" ]; then
         HOME_REGION_KEY=$(run_oci_cli iam tenancy get \
             --tenancy-id "${OCI_TENANCY_ID}" \
             --query 'data."home-region-key"' \
-            --raw-output 2>&1)
+            --raw-output 2>&1 | grep -v '^+' | tail -n1)
         HOME_REGION_EXIT=$?
         
         
         if [ ${HOME_REGION_EXIT} -eq 0 ] && [ -n "${HOME_REGION_KEY}" ]; then
             # リージョンキーをリージョン名に変換（動的検索）
-            OCI_HOME_REGION=$(run_oci_cli iam region list --output json 2>/dev/null | \
+            OCI_HOME_REGION=$(run_oci_cli iam region list --output json 2>&1 | grep -v '^+' | \
                 jq -r ".data[] | select(.key == \"${HOME_REGION_KEY}\") | .name")
             
             if [ -z "${OCI_HOME_REGION}" ]; then
@@ -607,8 +607,6 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
     ORIGINAL_SIZE_GB=$(echo "scale=2; ${ORIGINAL_SIZE} / 1024 / 1024 / 1024" | bc)
     print_success "対象サイズ: ${ORIGINAL_SIZE_GB} GB"
     echo ""
-
-    # タイムスタンプの記録
     START_TIME=$(date +%s)
     echo "開始時刻: $(date '+%Y-%m-%d %H:%M:%S')" | tee "${OCI_DIR}/last_backup.log"
 
