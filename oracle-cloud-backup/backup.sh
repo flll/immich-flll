@@ -125,7 +125,62 @@ restart_services() {
     fi
 }
 
-# クリーンアップ関数
+stop_services() {
+    if [ -z "${DOCKER_COMPOSE_FILE}" ]; then
+        print_error "DOCKER_COMPOSE_FILEが設定されていません"
+        return 1
+    fi
+    
+    print_header "Docker Composeサービスの停止"
+    print_warning "整合性のあるバックアップを作成するため、すべてのサービスを停止します"
+    print_warning "サービスは数分〜数十分停止します"
+    echo ""
+    
+    if [ -f "${DOCKER_COMPOSE_FILE}" ]; then
+        print_info "サービスを停止しています（タイムアウト: 60秒）..."
+        
+        if docker compose -f "${DOCKER_COMPOSE_FILE}" stop -t 60; then
+            print_success "サービスの停止が完了しました"
+            SERVICES_STOPPED=true
+            
+            # すべてのコンテナが停止したことを確認
+            print_info "コンテナの停止状態を確認しています..."
+            local max_wait=65
+            local elapsed=0
+            local all_stopped=false
+            
+            while [ ${elapsed} -lt ${max_wait} ]; do
+                local running_containers=$(docker compose -f "${DOCKER_COMPOSE_FILE}" ps -q --status running 2>/dev/null | wc -l | tr -d ' ')
+                
+                if [ "${running_containers}" -eq 0 ]; then
+                    all_stopped=true
+                    break
+                fi
+                
+                sleep 2
+                elapsed=$((elapsed + 2))
+            done
+            
+            if [ "${all_stopped}" = true ]; then
+                print_success "すべてのコンテナが停止しました"
+            else
+                print_error "一部のコンテナが停止していません"
+                print_warning "バックアップを続行しますが、整合性に問題がある可能性があります"
+            fi
+        else
+            print_error "サービスの停止に失敗しました"
+            print_warning "バックアップを中止します"
+            return 1
+        fi
+    else
+        print_error "docker-compose.ymlが見つかりません: ${DOCKER_COMPOSE_FILE}"
+        print_warning "サービスを停止せずにバックアップを続行します"
+        return 1
+    fi
+    echo ""
+    return 0
+}
+
 cleanup() {
     # パスワード変数のクリア
     if [ -n "${BACKUP_PASSWORD:-}" ]; then
@@ -195,6 +250,51 @@ print_info "OCI リージョン: ${OCI_REGION}"
 print_info "バケット名: ${OCI_BUCKET_NAME}"
 print_info "暗号化方式: OpenSSL AES-256-CBC"
 echo ""
+
+# sudo権限の確保（loginモード以外）
+if [ "${LOGIN_ONLY}" = false ]; then
+    print_header "sudo権限の確認"
+    print_info "バックアップにはroot所有ファイルへのアクセスが必要です"
+    echo ""
+    
+    if sudo -v; then
+        print_success "sudo権限を取得しました"
+    else
+        print_error "sudo権限の取得に失敗しました"
+        exit 1
+    fi
+    echo ""
+fi
+
+# 暗号化パスコードの入力（新規バックアップの場合のみ、loginモード以外）
+if [ "${LOGIN_ONLY}" = false ] && [ "${SKIP_BACKUP_CREATION}" = false ]; then
+    print_header "暗号化パスコードの設定"
+    print_warning "バックアップを暗号化するためのパスコードを入力してください"
+    print_warning "このパスコードは復号化時に必要です。必ず安全に保管してください"
+    echo ""
+
+    while true; do
+        read -s -p "パスコードを入力してください: " BACKUP_PASSWORD
+        echo ""
+        read -s -p "パスコードを再入力してください: " BACKUP_PASSWORD_CONFIRM
+        echo ""
+
+        if [ "${BACKUP_PASSWORD}" = "${BACKUP_PASSWORD_CONFIRM}" ]; then
+            if [ -z "${BACKUP_PASSWORD}" ]; then
+                print_error "パスコードが空です。再度入力してください"
+                echo ""
+            else
+                print_success "パスコードが設定されました"
+                unset BACKUP_PASSWORD_CONFIRM
+                break
+            fi
+        else
+            print_error "パスコードが一致しません。再度入力してください"
+            echo ""
+        fi
+    done
+    echo ""
+fi
 
 # OCI認証の確認と実行
 print_header "OCI認証"
@@ -499,36 +599,8 @@ else
     echo ""
 fi
 
-# パスコードの入力（新規バックアップの場合のみ）
+# バックアップ設定の表示（新規バックアップの場合のみ）
 if [ "${SKIP_BACKUP_CREATION}" = false ]; then
-    print_header "暗号化パスコードの設定"
-    print_warning "バックアップを暗号化するためのパスコードを入力してください"
-    print_warning "このパスコードは復号化時に必要です。必ず安全に保管してください"
-    echo ""
-
-    while true; do
-        read -s -p "パスコードを入力してください: " BACKUP_PASSWORD
-        echo ""
-        read -s -p "パスコードを再入力してください: " BACKUP_PASSWORD_CONFIRM
-        echo ""
-
-        if [ "${BACKUP_PASSWORD}" = "${BACKUP_PASSWORD_CONFIRM}" ]; then
-            if [ -z "${BACKUP_PASSWORD}" ]; then
-                print_error "パスコードが空です。再度入力してください"
-                echo ""
-            else
-                print_success "パスコードが設定されました"
-                unset BACKUP_PASSWORD_CONFIRM
-                break
-            fi
-        else
-            print_error "パスコードが一致しません。再度入力してください"
-            echo ""
-        fi
-    done
-    echo ""
-
-    # バックアップ設定の表示
     print_header "バックアップ設定"
     print_info "除外するディレクトリ:"
     for pattern in "${EXCLUDE_PATTERNS[@]}"; do
@@ -540,54 +612,10 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
     echo ""
     
     # Docker Composeサービスの停止
-    print_header "Docker Composeサービスの停止"
-    print_warning "整合性のあるバックアップを作成するため、すべてのサービスを停止します"
-    print_warning "サービスは数分〜数十分停止します"
-    echo ""
-    
-    if [ -f "${DOCKER_COMPOSE_FILE}" ]; then
-        print_info "サービスを停止しています（タイムアウト: 60秒）..."
-        
-        if docker compose -f "${DOCKER_COMPOSE_FILE}" stop -t 60; then
-            print_success "サービスの停止が完了しました"
-            SERVICES_STOPPED=true
-            
-            # すべてのコンテナが停止したことを確認
-            print_info "コンテナの停止状態を確認しています..."
-            local max_wait=65
-            local elapsed=0
-            local all_stopped=false
-            
-            while [ ${elapsed} -lt ${max_wait} ]; do
-                local running_containers=$(docker compose -f "${DOCKER_COMPOSE_FILE}" ps -q --status running 2>/dev/null | wc -l | tr -d ' ')
-                
-                if [ "${running_containers}" -eq 0 ]; then
-                    all_stopped=true
-                    break
-                fi
-                
-                sleep 2
-                elapsed=$((elapsed + 2))
-            done
-            
-            if [ "${all_stopped}" = true ]; then
-                print_success "すべてのコンテナが停止しました"
-            else
-                print_error "一部のコンテナが停止していません"
-                print_warning "バックアップを続行しますが、整合性に問題がある可能性があります"
-            fi
-        else
-            print_error "サービスの停止に失敗しました"
-            print_warning "バックアップを中止します"
-            exit 1
-        fi
-    else
-        print_error "docker-compose.ymlが見つかりません: ${DOCKER_COMPOSE_FILE}"
-        print_warning "サービスを停止せずにバックアップを続行します"
+    if ! stop_services; then
+        exit 1
     fi
-    echo ""
 fi
-
 # バックアップの圧縮と暗号化（新規バックアップの場合のみ）
 if [ "${SKIP_BACKUP_CREATION}" = false ]; then
     print_header "バックアップの作成"
@@ -612,9 +640,13 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
 
     # tar + gzip + OpenSSL暗号化（パイプライン）
     print_info "圧縮と暗号化を実行しています..."
+    print_info "エラーログ: ${OCI_DIR}/tar_errors.log"
     echo ""
 
-    if tar -czf - -C "${IMMICH_ROOT}" ${EXCLUDE_ARGS} . 2>/dev/null | \
+    # エラーログを初期化
+    : > "${OCI_DIR}/tar_errors.log"
+
+    if sudo tar -czf - -C "${IMMICH_ROOT}" ${EXCLUDE_ARGS} . 2>&1 | tee -a "${OCI_DIR}/tar_errors.log" | \
        openssl enc -aes-256-cbc -salt -pbkdf2 -pass pass:"${BACKUP_PASSWORD}" -out "${TEMP_DIR}/${BACKUP_FILENAME}"; then
 
         # 圧縮後のサイズを取得
@@ -628,6 +660,21 @@ if [ "${SKIP_BACKUP_CREATION}" = false ]; then
         print_info "圧縮後のサイズ: ${COMPRESSED_SIZE_GB} GB"
         print_info "圧縮率: ${COMPRESSION_RATIO}%"
         echo ""
+        
+        # tarのエラーログをチェック
+        if [ -f "${OCI_DIR}/tar_errors.log" ] && [ -s "${OCI_DIR}/tar_errors.log" ]; then
+            # tarの正常な出力（ブロック情報など）を除外してエラーのみを抽出
+            ERROR_LINES=$(grep -v "^tar: " "${OCI_DIR}/tar_errors.log" | grep -v "^$" | grep -i -E "(error|permission denied|cannot|failed)" || true)
+            
+            if [ -n "${ERROR_LINES}" ]; then
+                print_warning "バックアップ中に以下のエラーが発生しました:"
+                echo "${ERROR_LINES}" | head -10
+                echo ""
+                print_warning "一部のファイルがスキップされた可能性があります"
+                print_info "詳細: ${OCI_DIR}/tar_errors.log"
+                echo ""
+            fi
+        fi
     else
         print_error "圧縮または暗号化に失敗しました"
         exit 1
